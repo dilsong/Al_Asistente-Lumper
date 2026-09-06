@@ -124,6 +124,7 @@
     transcriptTimer: null,
     audioStream: null,
     cierreRegistrado: false,
+    historialFecha: "",
   };
 
   const $ = (id) => document.getElementById(id);
@@ -430,11 +431,64 @@
     return true;
   }
 
-  function filaHistorialHtml(row, idx) {
+  function historialNormalizado() {
+    return leerHistorialContenedores().map(normalizarRegistroCierre).filter(Boolean);
+  }
+
+  function diaActual() {
+    return fechaSoloDia(formatearFechaHora(new Date()));
+  }
+
+  function cierresDeFecha(dia) {
+    const clave = dia || state.historialFecha || diaActual();
+    return historialNormalizado().filter((row) => fechaSoloDia(row.fecha) === clave);
+  }
+
+  function totalesCierres(lista) {
+    return lista.reduce(
+      (acc, row) => ({
+        contenedores: acc.contenedores + 1,
+        totalSkus: acc.totalSkus + enteroNoNegativo(row.totalSkus),
+        totalCajas: acc.totalCajas + enteroNoNegativo(row.totalCajas),
+        paletasCompletas: acc.paletasCompletas + enteroNoNegativo(row.paletasCompletas),
+        paletasParciales: acc.paletasParciales + enteroNoNegativo(row.paletasParciales),
+      }),
+      { contenedores: 0, totalSkus: 0, totalCajas: 0, paletasCompletas: 0, paletasParciales: 0 }
+    );
+  }
+
+  function textoResumenDia(dia) {
+    const clave = dia || state.historialFecha || diaActual();
+    const lista = cierresDeFecha(clave);
+    if (!lista.length) return "";
+    const tot = totalesCierres(lista);
+    const detalle = lista.map((row, i) =>
+      [
+        `*#${i + 1} ${row.contenedor}*`,
+        `Hora: ${String(row.fecha).slice(11) || row.fecha}`,
+        `SKUs: ${row.totalSkus} · Cajas: ${row.totalCajas}`,
+        `Paletas: ${row.paletasCompletas} completas · ${row.paletasParciales} parciales`,
+      ].join("\n")
+    );
+    return [
+      `*AL — Resumen del día ${clave}*`,
+      `Contenedores procesados: ${tot.contenedores}`,
+      "",
+      ...detalle,
+      "",
+      "*Totales del día*",
+      `🔢 SKUs: ${tot.totalSkus}`,
+      `📦 Cajas: ${tot.totalCajas}`,
+      `✅ Paletas completas: ${tot.paletasCompletas}`,
+      `⚠️ Paletas parciales: ${tot.paletasParciales}`,
+    ].join("\n");
+  }
+
+  function filaHistorialHtml(row, idx, numero) {
     const r = normalizarRegistroCierre(row);
     if (!r) return "";
     return `<article class="settings-card">
-      <p class="muted">${escapar(r.fecha)}</p>
+      <p class="muted">#${numero} · ${escapar(r.fecha)}</p>
       <h3>Contenedor ${escapar(r.contenedor)}</h3>
       <p>${r.totalSkus} SKUs · ${r.totalCajas} cajas</p>
       <p>${r.paletasCompletas} paletas completas · ${r.paletasParciales} paletas parciales</p>
@@ -442,38 +496,47 @@
     </article>`;
   }
 
+  function renderSelectorFechas(historial) {
+    const select = $("historial-fecha");
+    if (!select) return;
+    const dias = [];
+    historial.forEach((row) => {
+      const dia = fechaSoloDia(row.fecha);
+      if (dia && !dias.includes(dia)) dias.push(dia);
+    });
+    const hoy = diaActual();
+    if (!dias.includes(hoy)) dias.unshift(hoy);
+    if (!state.historialFecha || !dias.includes(state.historialFecha)) {
+      state.historialFecha = hoy;
+    }
+    select.innerHTML = dias
+      .map((dia) => `<option value="${escapar(dia)}"${dia === state.historialFecha ? " selected" : ""}>${escapar(dia)}</option>`)
+      .join("");
+  }
+
   function renderHistorial() {
     const body = $("historial-lista");
+    const contador = $("historial-contador");
     if (!body) return;
-    const historial = leerHistorialContenedores().map(normalizarRegistroCierre).filter(Boolean);
-    if (!historial.length) {
-      body.innerHTML = `<p class="historial-empty">Aún no hay cierres guardados.</p>`;
+    const historial = historialNormalizado();
+    renderSelectorFechas(historial);
+    const dia = state.historialFecha || diaActual();
+    const delDia = historial
+      .map((row, idx) => ({ row, idx }))
+      .filter((item) => fechaSoloDia(item.row.fecha) === dia);
+    const esHoy = dia === diaActual();
+    if (contador) {
+      contador.textContent = esHoy
+        ? `Contenedores procesados hoy: ${delDia.length}`
+        : `Contenedores procesados el ${dia}: ${delDia.length}`;
+    }
+    if (!delDia.length) {
+      body.innerHTML = `<p class="historial-empty">No hay contenedores registrados en esta fecha.</p>`;
       return;
     }
-    const hoy = fechaSoloDia(formatearFechaHora(new Date()));
-    const delDia = [];
-    const anteriores = [];
-    historial.forEach((row, idx) => {
-      if (fechaSoloDia(row.fecha) === hoy) delDia.push({ row, idx });
-      else anteriores.push({ row, idx });
-    });
-    const bloques = [];
-    bloques.push(`<p class="kicker">Cierres de hoy</p>`);
-    if (!delDia.length) bloques.push(`<p class="historial-empty">No hay cierres registrados hoy.</p>`);
-    else {
-      delDia
-        .slice()
-        .reverse()
-        .forEach((item) => bloques.push(filaHistorialHtml(item.row, item.idx)));
-    }
-    if (anteriores.length) {
-      bloques.push(`<p class="kicker">Anteriores</p>`);
-      anteriores
-        .slice()
-        .reverse()
-        .forEach((item) => bloques.push(filaHistorialHtml(item.row, item.idx)));
-    }
-    body.innerHTML = bloques.join("");
+    body.innerHTML = delDia
+      .map((item, numero) => filaHistorialHtml(item.row, item.idx, numero + 1))
+      .join("");
     body.querySelectorAll("[data-historial-idx]").forEach((btn) => {
       btn.addEventListener("click", () => {
         const registro = historial[Number(btn.dataset.historialIdx)];
@@ -495,39 +558,15 @@
     if (overlay) overlay.classList.add("hidden");
   }
 
-  async function exportarHistorialTexto() {
-    const historial = leerHistorialContenedores();
+  async function copiarResumenDia() {
     const status = $("historial-status");
-    if (!historial.length) {
-      if (status) status.textContent = "No hay cierres para exportar.";
+    const texto = textoResumenDia(state.historialFecha || diaActual());
+    if (!texto) {
+      if (status) status.textContent = "No hay contenedores en esta fecha para copiar.";
       return;
     }
-    const lineas = [
-      "Historial de cierres AL",
-      "",
-      ...historial.map((row) => textoWhatsAppCierre(row)),
-    ];
-    const texto = lineas.join("\n");
-    try {
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        await navigator.clipboard.writeText(texto);
-      } else {
-        throw new Error("clipboard");
-      }
-      mostrarAvisoCopia();
-      if (status) status.textContent = "¡Reporte copiado al portapapeles!";
-    } catch {
-      const blob = new Blob([texto], { type: "text/plain;charset=utf-8" });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = `AL_historial_cierres_${new Date().toISOString().slice(0, 10)}.txt`;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 1500);
-      if (status) status.textContent = "Historial descargado como texto.";
-    }
+    await copiarTextoWhatsApp(texto);
+    if (status) status.textContent = "¡Reporte copiado al portapapeles!";
   }
 
   function limpiarHistorialCierres() {
@@ -1837,8 +1876,15 @@
     if (btnHistorial) btnHistorial.addEventListener("click", abrirHistorial);
     const historialClose = $("historial-close");
     if (historialClose) historialClose.addEventListener("click", cerrarHistorial);
-    const historialExportar = $("historial-exportar");
-    if (historialExportar) historialExportar.addEventListener("click", () => exportarHistorialTexto());
+    const historialResumen = $("historial-resumen-dia");
+    if (historialResumen) historialResumen.addEventListener("click", () => copiarResumenDia());
+    const historialFecha = $("historial-fecha");
+    if (historialFecha) {
+      historialFecha.addEventListener("change", (event) => {
+        state.historialFecha = event.target.value;
+        renderHistorial();
+      });
+    }
     const historialLimpiar = $("historial-limpiar");
     if (historialLimpiar) historialLimpiar.addEventListener("click", limpiarHistorialCierres);
     $("paleta-input").addEventListener("change", (event) => guardarPaleta(event.target.value));

@@ -141,11 +141,13 @@
           </div>
           <button type="button" class="btn-ghost" id="historial-close">Volver</button>
         </div>
-        <p class="muted settings-help">Cierres del día. Use 📲 para copiar el reporte a WhatsApp.</p>
+        <p id="historial-contador" class="settings-license-name">Contenedores procesados hoy: 0</p>
+        <label class="muted settings-help" for="historial-fecha">Fecha</label>
+        <select id="historial-fecha" class="filter-input" style="width: 100%; max-width: none; margin-bottom: 12px;"></select>
         <div id="historial-lista"></div>
         <p id="historial-status" class="settings-status" aria-live="polite"></p>
         <div class="historial-actions">
-          <button type="button" id="historial-exportar" class="btn-secondary">Exportar / Copiar</button>
+          <button type="button" id="historial-resumen-dia" class="btn-whatsapp">📲 Copiar Resumen del Día</button>
           <button type="button" id="historial-limpiar" class="btn-ghost">Limpiar historial</button>
         </div>
       </div>

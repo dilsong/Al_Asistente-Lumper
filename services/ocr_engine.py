@@ -8,35 +8,54 @@ import json
 import logging
 import os
 import re
+import sys
 import urllib.error
 import urllib.request
 from datetime import datetime
 from pathlib import Path
+from shutil import which
 from typing import Any
 
-import pytesseract
 from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 
 logger = logging.getLogger(__name__)
 
-TESSERACT_CMD = os.environ.get(
-    "TESSERACT_CMD",
-    r"C:\Program Files\Tesseract-OCR\tesseract.exe",
-)
-pytesseract.pytesseract.tesseract_cmd = TESSERACT_CMD
+try:
+    import pytesseract
+except Exception as exc:
+    pytesseract = None
+    logger.info("pytesseract no disponible (%s). Se usará visión (Gemini/OpenAI).", exc)
+
+
+def _configurar_tesseract() -> None:
+    """En Windows busca Tesseract local; en Linux/Render no fuerza esa ruta."""
+    if pytesseract is None:
+        return
+    cmd = os.environ.get("TESSERACT_CMD", "").strip()
+    if cmd:
+        pytesseract.pytesseract.tesseract_cmd = cmd
+        return
+    if sys.platform.startswith("win"):
+        windows = Path(r"C:\Program Files\Tesseract-OCR\tesseract.exe")
+        if windows.is_file():
+            pytesseract.pytesseract.tesseract_cmd = str(windows)
 
 
 def tesseract_disponible() -> bool:
-    ruta = Path(pytesseract.pytesseract.tesseract_cmd)
-    if ruta.is_file():
-        return True
-    mensaje = f"Tesseract no encontrado. Ruta consultada: {ruta}"
-    logger.error(mensaje)
-    print(f"[AL OCR] {mensaje}", flush=True)
+    if pytesseract is None:
+        return False
+    try:
+        cmd = getattr(pytesseract.pytesseract, "tesseract_cmd", "") or ""
+        if cmd and Path(cmd).is_file():
+            return True
+        if not sys.platform.startswith("win"):
+            return which("tesseract") is not None
+    except Exception:
+        return False
     return False
 
 
-tesseract_disponible()
+_configurar_tesseract()
 
 CONTENEDOR_RE = re.compile(r"\b([A-Z]{4}\s?\d{6,7})\b")
 SKU_FLEX_RE = re.compile(
@@ -184,23 +203,20 @@ def recortar_columna_codigos_barra(imagen: Image.Image) -> Image.Image:
 
 
 def _ocr_imagen(imagen: Image.Image) -> str:
+    if pytesseract is None:
+        return ""
     config = "--oem 3 --psm 6"
     try:
         return pytesseract.image_to_string(imagen, lang="eng+spa", config=config) or ""
-    except pytesseract.TesseractNotFoundError:
-        mensaje = (
-            "Tesseract no encontrado al ejecutar OCR. "
-            f"Ruta consultada: {pytesseract.pytesseract.tesseract_cmd}"
-        )
-        logger.error(mensaje)
-        print(f"[AL OCR] {mensaje}", flush=True)
-        return ""
     except Exception as exc:
+        if type(exc).__name__ == "TesseractNotFoundError":
+            logger.info("Tesseract no está instalado. Se omite el OCR local.")
+            return ""
         logger.warning("OCR eng+spa falló (%s). Reintento en inglés.", exc)
         try:
             return pytesseract.image_to_string(imagen, lang="eng", config=config) or ""
         except Exception as exc2:
-            logger.error("No se pudo leer la imagen con Tesseract: %s", exc2)
+            logger.info("No se pudo leer la imagen con Tesseract: %s", exc2)
             return ""
 
 

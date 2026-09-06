@@ -312,6 +312,28 @@
     return { contenedor: "", formato: "", fecha_carga: null, skus: [] };
   }
 
+  function limpiarNuevaHoja() {
+    const ok = window.confirm("¿Deseas limpiar la pantalla para procesar una nueva hoja?");
+    if (!ok) return;
+    state.inventario = inventarioVacio();
+    state.skuActivo = null;
+    state.filtro = "";
+    state.kpis = calcularKpis(state.inventario);
+    persistirInventario();
+    const filtro = $("tabla-filtro");
+    if (filtro) filtro.value = "";
+    setCajasCampo(0);
+    const paleta = $("paleta-input");
+    if (paleta) paleta.value = "0";
+    mostrarCompleto(false);
+    const panel = $("inventario-panel");
+    if (panel) panel.classList.remove("needs-sku");
+    renderKpis();
+    renderTabla();
+    renderContenedor();
+    responder("Pantalla lista para una nueva hoja. Escanee o cargue la siguiente foto.");
+  }
+
   function calcularKpis(inventario) {
     const data = inventario || state.inventario || inventarioVacio();
     const skus = data.skus || [];
@@ -326,12 +348,16 @@
     ).length;
     const avance = esperadas ? Math.round((Math.min(contadas, esperadas) / esperadas) * 1000) / 10 : 0;
     let paletasPendientes = 0;
-    let paletasSacadas = 0;
+    let paletasCompletas = 0;
+    let paletasParciales = 0;
     skus.forEach((item) => {
       const factor = enteroNoNegativo(item.cajas_por_paleta);
       if (factor <= 0) return;
       const cajas = enteroNoNegativo(item.contador);
-      if (cajas) paletasSacadas += Math.ceil(cajas / factor);
+      if (cajas) {
+        paletasCompletas += Math.floor(cajas / factor);
+        if (cajas % factor) paletasParciales += 1;
+      }
       const resto = Math.max(enteroNoNegativo(item.cantidad_esperada) - cajas, 0);
       if (resto) paletasPendientes += Math.ceil(resto / factor);
     });
@@ -341,7 +367,9 @@
       cajas_pendientes: cajasPendientes,
       skus_pendientes: skusPendientes,
       paletas_pendientes: paletasPendientes,
-      paletas_sacadas: paletasSacadas,
+      paletas_completas: paletasCompletas,
+      paletas_parciales: paletasParciales,
+      paletas_sacadas: paletasCompletas + paletasParciales,
       paletas_definidas: skus.some((item) => enteroNoNegativo(item.cajas_por_paleta) > 0),
       avance,
       cajas_esperadas: esperadas,
@@ -359,8 +387,12 @@
     const metricas = kpis || calcularKpis(state.inventario);
     const cajas = etiquetaCantidad(metricas.cajas_contadas, "caja", "cajas");
     if (metricas.paletas_definidas) {
-      const paletas = etiquetaCantidad(metricas.paletas_sacadas, "paleta", "paletas");
-      return `¡Término de la descarga! El contenedor se ha descargado por completo. Se sacaron ${cajas} y ${paletas} en total.`;
+      const completas = etiquetaCantidad(metricas.paletas_completas, "paleta completa", "paletas completas");
+      const parciales = etiquetaCantidad(metricas.paletas_parciales, "paleta parcial", "paletas parciales");
+      return (
+        `¡Término de la descarga! El contenedor se ha descargado por completo. ` +
+        `Se sacaron ${cajas}, ${completas} y ${parciales}.`
+      );
     }
     return `¡Término de la descarga! El contenedor se ha descargado por completo. Se sacaron ${cajas}. Las paletas no están definidas.`;
   }
@@ -1560,6 +1592,8 @@
     $("btn-sumar-cajas").addEventListener("click", () => conteoManual("sumar"));
     $("btn-fijar-cajas").addEventListener("click", () => conteoManual("editar"));
     $("btn-estatus").addEventListener("click", () => reportarEstatus().catch((err) => responder(err.message)));
+    const btnNuevaHoja = $("btn-nueva-hoja");
+    if (btnNuevaHoja) btnNuevaHoja.addEventListener("click", () => limpiarNuevaHoja());
     $("paleta-input").addEventListener("change", (event) => guardarPaleta(event.target.value));
     $("btn-limpiar-chat").addEventListener("click", () => limpiarChat());
     const btnSettings = $("btn-settings");
@@ -1587,8 +1621,9 @@
     aplicarComandosPersonalizados();
     enlazarUi();
     const local = leerInventarioLocal();
-    const tieneLocal = Boolean(local && local.inventario && (local.inventario.skus || []).length);
-    if (tieneLocal) {
+    const sesionLocal = Boolean(local && local.inventario);
+    const tieneLocal = Boolean(sesionLocal && (local.inventario.skus || []).length);
+    if (sesionLocal) {
       aplicarInventarioCargado(local.inventario, local.skuActivo);
     }
 
@@ -1608,7 +1643,7 @@
 
     $("wake-hint").textContent = `Di “${(state.config.wake_word || "oye al").replace(/\b\w/g, (c) => c.toUpperCase())}”`;
 
-    if (!tieneLocal) {
+    if (!sesionLocal) {
       try {
         const sesion = await api("/api/inventario");
         if (sesion.inventario && (sesion.inventario.skus || []).length) {

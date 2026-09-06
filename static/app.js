@@ -81,6 +81,7 @@
   const WAKE_ALIASES = ["oye al", "oye aele", "oye ale", "oye a l", "hey al", "ok al", "okay al"];
   const LS_INVENTARIO = "al_inventario_activo";
   const LS_COMANDOS = "al_comandos_voz";
+  const LS_HISTORIAL = "historialContenedores";
   const CATALOGO_COMANDOS = [
     { tipo: "SUMAR", titulo: "Sumar cajas", ejemplo: "suma [X]" },
     { tipo: "ESTATUS", titulo: "Consultar resumen", ejemplo: "estatus / status" },
@@ -122,6 +123,7 @@
     restartTimer: null,
     transcriptTimer: null,
     audioStream: null,
+    cierreRegistrado: false,
   };
 
   const $ = (id) => document.getElementById(id);
@@ -312,12 +314,239 @@
     return { contenedor: "", formato: "", fecha_carga: null, skus: [] };
   }
 
+  function leerHistorialContenedores() {
+    try {
+      const raw = localStorage.getItem(LS_HISTORIAL);
+      const data = raw ? JSON.parse(raw) : [];
+      return Array.isArray(data) ? data : [];
+    } catch {
+      return [];
+    }
+  }
+
+  function persistirHistorialContenedores(lista) {
+    localStorage.setItem(LS_HISTORIAL, JSON.stringify(lista));
+  }
+
+  function formatearFechaHora(fecha) {
+    const d = fecha instanceof Date ? fecha : new Date(fecha);
+    if (Number.isNaN(d.getTime())) return String(fecha || "");
+    const pad = (n) => String(n).padStart(2, "0");
+    return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  }
+
+  function fechaSoloDia(fechaStr) {
+    return String(fechaStr || "").slice(0, 10);
+  }
+
+  function normalizarRegistroCierre(row) {
+    if (!row || typeof row !== "object") return null;
+    return {
+      fecha: row.fecha || row.fecha_hora || "",
+      contenedor: row.contenedor || row.numero_contenedor || "SIN-ID",
+      totalSkus: enteroNoNegativo(row.totalSkus ?? row.total_skus),
+      totalCajas: enteroNoNegativo(row.totalCajas ?? row.total_cajas),
+      paletasCompletas: enteroNoNegativo(row.paletasCompletas ?? row.total_paletas_completas),
+      paletasParciales: enteroNoNegativo(row.paletasParciales ?? row.total_paletas_parciales),
+    };
+  }
+
+  function construirRegistroCierre() {
+    const kpis = calcularKpis(state.inventario);
+    const skus = (state.inventario.skus || []).length;
+    if (!skus) return null;
+    return {
+      fecha: formatearFechaHora(new Date()),
+      contenedor: state.inventario.contenedor || "SIN-ID",
+      totalSkus: kpis.skus_totales || skus,
+      totalCajas: kpis.cajas_contadas || 0,
+      paletasCompletas: kpis.paletas_completas || 0,
+      paletasParciales: kpis.paletas_parciales || 0,
+    };
+  }
+
+  function esMismoCierre(a, b) {
+    const x = normalizarRegistroCierre(a);
+    const y = normalizarRegistroCierre(b);
+    if (!x || !y) return false;
+    return (
+      x.contenedor === y.contenedor &&
+      x.totalSkus === y.totalSkus &&
+      x.totalCajas === y.totalCajas &&
+      x.paletasCompletas === y.paletasCompletas &&
+      x.paletasParciales === y.paletasParciales
+    );
+  }
+
+  function textoWhatsAppCierre(row) {
+    const r = normalizarRegistroCierre(row) || construirRegistroCierre();
+    if (!r) return "";
+    return [
+      "*AL — Cierre de contenedor*",
+      `📅 Fecha: ${r.fecha}`,
+      `📦 Contenedor: ${r.contenedor}`,
+      `🔢 Total SKUs: ${r.totalSkus}`,
+      `📦 Total cajas: ${r.totalCajas}`,
+      `✅ Paletas completas: ${r.paletasCompletas}`,
+      `⚠️ Paletas parciales: ${r.paletasParciales}`,
+    ].join("\n");
+  }
+
+  function mostrarAvisoCopia() {
+    const el = $("copy-toast");
+    if (!el) return;
+    el.textContent = "¡Reporte copiado al portapapeles!";
+    el.classList.remove("hidden");
+    if (state.toastTimer) clearTimeout(state.toastTimer);
+    state.toastTimer = setTimeout(() => el.classList.add("hidden"), 2200);
+  }
+
+  async function copiarTextoWhatsApp(texto) {
+    if (!texto) return;
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(texto);
+      } else {
+        throw new Error("clipboard");
+      }
+      mostrarAvisoCopia();
+    } catch {
+      window.prompt("Copie el reporte y péguelo en WhatsApp:", texto);
+    }
+  }
+
+  function registrarCierreContenedor() {
+    const registro = construirRegistroCierre();
+    if (!registro) return false;
+    const historial = leerHistorialContenedores();
+    const ultimo = historial[historial.length - 1];
+    if (esMismoCierre(ultimo, registro)) {
+      state.cierreRegistrado = true;
+      return false;
+    }
+    historial.push(registro);
+    persistirHistorialContenedores(historial);
+    state.cierreRegistrado = true;
+    return true;
+  }
+
+  function filaHistorialHtml(row, idx) {
+    const r = normalizarRegistroCierre(row);
+    if (!r) return "";
+    return `<article class="settings-card">
+      <p class="muted">${escapar(r.fecha)}</p>
+      <h3>Contenedor ${escapar(r.contenedor)}</h3>
+      <p>${r.totalSkus} SKUs · ${r.totalCajas} cajas</p>
+      <p>${r.paletasCompletas} paletas completas · ${r.paletasParciales} paletas parciales</p>
+      <button type="button" class="btn-whatsapp" data-historial-idx="${idx}">📲 Copiar para WhatsApp</button>
+    </article>`;
+  }
+
+  function renderHistorial() {
+    const body = $("historial-lista");
+    if (!body) return;
+    const historial = leerHistorialContenedores().map(normalizarRegistroCierre).filter(Boolean);
+    if (!historial.length) {
+      body.innerHTML = `<p class="historial-empty">Aún no hay cierres guardados.</p>`;
+      return;
+    }
+    const hoy = fechaSoloDia(formatearFechaHora(new Date()));
+    const delDia = [];
+    const anteriores = [];
+    historial.forEach((row, idx) => {
+      if (fechaSoloDia(row.fecha) === hoy) delDia.push({ row, idx });
+      else anteriores.push({ row, idx });
+    });
+    const bloques = [];
+    bloques.push(`<p class="kicker">Cierres de hoy</p>`);
+    if (!delDia.length) bloques.push(`<p class="historial-empty">No hay cierres registrados hoy.</p>`);
+    else {
+      delDia
+        .slice()
+        .reverse()
+        .forEach((item) => bloques.push(filaHistorialHtml(item.row, item.idx)));
+    }
+    if (anteriores.length) {
+      bloques.push(`<p class="kicker">Anteriores</p>`);
+      anteriores
+        .slice()
+        .reverse()
+        .forEach((item) => bloques.push(filaHistorialHtml(item.row, item.idx)));
+    }
+    body.innerHTML = bloques.join("");
+    body.querySelectorAll("[data-historial-idx]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const registro = historial[Number(btn.dataset.historialIdx)];
+        copiarTextoWhatsApp(textoWhatsAppCierre(registro));
+      });
+    });
+  }
+
+  function abrirHistorial() {
+    const overlay = $("historial-overlay");
+    const status = $("historial-status");
+    if (status) status.textContent = "";
+    renderHistorial();
+    if (overlay) overlay.classList.remove("hidden");
+  }
+
+  function cerrarHistorial() {
+    const overlay = $("historial-overlay");
+    if (overlay) overlay.classList.add("hidden");
+  }
+
+  async function exportarHistorialTexto() {
+    const historial = leerHistorialContenedores();
+    const status = $("historial-status");
+    if (!historial.length) {
+      if (status) status.textContent = "No hay cierres para exportar.";
+      return;
+    }
+    const lineas = [
+      "Historial de cierres AL",
+      "",
+      ...historial.map((row) => textoWhatsAppCierre(row)),
+    ];
+    const texto = lineas.join("\n");
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(texto);
+      } else {
+        throw new Error("clipboard");
+      }
+      mostrarAvisoCopia();
+      if (status) status.textContent = "¡Reporte copiado al portapapeles!";
+    } catch {
+      const blob = new Blob([texto], { type: "text/plain;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `AL_historial_cierres_${new Date().toISOString().slice(0, 10)}.txt`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1500);
+      if (status) status.textContent = "Historial descargado como texto.";
+    }
+  }
+
+  function limpiarHistorialCierres() {
+    if (!leerHistorialContenedores().length) return;
+    if (!window.confirm("¿Deseas borrar todo el historial de cierres de esta jornada?")) return;
+    persistirHistorialContenedores([]);
+    renderHistorial();
+    const status = $("historial-status");
+    if (status) status.textContent = "Historial borrado.";
+  }
+
   function limpiarNuevaHoja() {
     const ok = window.confirm("¿Deseas limpiar la pantalla para procesar una nueva hoja?");
     if (!ok) return;
+    if ((state.inventario.skus || []).length) registrarCierreContenedor();
     state.inventario = inventarioVacio();
     state.skuActivo = null;
     state.filtro = "";
+    state.cierreRegistrado = false;
     state.kpis = calcularKpis(state.inventario);
     persistirInventario();
     const filtro = $("tabla-filtro");
@@ -624,6 +853,7 @@
     const existe = skuActivo && encontrarSku(skuActivo);
     state.skuActivo = existe ? existe.sku : null;
     state.kpis = calcularKpis(inventario);
+    state.cierreRegistrado = false;
     persistirInventario();
     renderKpis();
     renderTabla();
@@ -1227,6 +1457,7 @@
     renderContenedor();
     await responder(data.mensaje, { sku: data.sku.sku, modo });
     if (data.kpis && data.kpis.skus_totales && data.kpis.cajas_pendientes === 0) {
+      registrarCierreContenedor();
       mostrarCompleto(true);
       await responder(mensajeCierreDescarga(data.kpis), { evento: "completo" });
     }
@@ -1285,6 +1516,7 @@
   async function reportarEstatus() {
     const data = estatusLocal();
     aplicarSesion(data);
+    if (data.completo) registrarCierreContenedor();
     mostrarCompleto(Boolean(data.completo));
     await responder(data.mensaje, { evento: "estatus", completo: data.completo });
   }
@@ -1589,11 +1821,26 @@
     });
     $("sku-modal-close").addEventListener("click", () => $("sku-modal").classList.add("hidden"));
     $("complete-alert-close").addEventListener("click", () => mostrarCompleto(false));
+    const btnWhatsappCierre = $("complete-alert-whatsapp");
+    if (btnWhatsappCierre) {
+      btnWhatsappCierre.addEventListener("click", () => {
+        const registro = construirRegistroCierre() || leerHistorialContenedores().slice(-1)[0];
+        copiarTextoWhatsApp(textoWhatsAppCierre(registro));
+      });
+    }
     $("btn-sumar-cajas").addEventListener("click", () => conteoManual("sumar"));
     $("btn-fijar-cajas").addEventListener("click", () => conteoManual("editar"));
     $("btn-estatus").addEventListener("click", () => reportarEstatus().catch((err) => responder(err.message)));
     const btnNuevaHoja = $("btn-nueva-hoja");
     if (btnNuevaHoja) btnNuevaHoja.addEventListener("click", () => limpiarNuevaHoja());
+    const btnHistorial = $("btn-historial");
+    if (btnHistorial) btnHistorial.addEventListener("click", abrirHistorial);
+    const historialClose = $("historial-close");
+    if (historialClose) historialClose.addEventListener("click", cerrarHistorial);
+    const historialExportar = $("historial-exportar");
+    if (historialExportar) historialExportar.addEventListener("click", () => exportarHistorialTexto());
+    const historialLimpiar = $("historial-limpiar");
+    if (historialLimpiar) historialLimpiar.addEventListener("click", limpiarHistorialCierres);
     $("paleta-input").addEventListener("change", (event) => guardarPaleta(event.target.value));
     $("btn-limpiar-chat").addEventListener("click", () => limpiarChat());
     const btnSettings = $("btn-settings");

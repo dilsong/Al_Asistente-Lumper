@@ -1,4 +1,4 @@
-const CACHE = "al-lumper-v15";
+const CACHE = "al-lumper-v17";
 const PRECACHE = [
   "/",
   "/static/index.html",

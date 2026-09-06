@@ -32,6 +32,60 @@
         text-align: right;
         margin-right: 10px;
       }
+      .historial-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.85rem;
+      }
+      .historial-table th,
+      .historial-table td {
+        padding: 8px 6px;
+        border-bottom: 1px solid #2a3550;
+        text-align: left;
+      }
+      .historial-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 14px;
+      }
+      .historial-empty {
+        color: #94a3b8;
+        text-align: center;
+        padding: 18px 8px;
+      }
+      .btn-whatsapp {
+        min-height: 44px;
+        border: 0;
+        border-radius: 12px;
+        background: #128c7e;
+        color: #fff;
+        font-weight: 800;
+        padding: 8px 12px;
+        cursor: pointer;
+      }
+      .complete-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 14px;
+      }
+      .copy-toast {
+        position: fixed;
+        left: 12px;
+        right: 12px;
+        bottom: calc(88px + env(safe-area-inset-bottom));
+        z-index: 60;
+        background: #166534;
+        color: #dcfce7;
+        font-weight: 800;
+        text-align: center;
+        padding: 12px 14px;
+        border-radius: 14px;
+      }
+      .copy-toast.hidden {
+        display: none;
+      }
     </style>
   </head>
   <body class="bg-yard-900 text-slate-100">
@@ -48,7 +102,10 @@
         <p class="kicker">Contenedor</p>
         <h2>¡Descarga completa!</h2>
         <p id="complete-alert-msg">El contenedor se ha descargado por completo.</p>
-        <button type="button" class="btn-primary" id="complete-alert-close">Cerrar</button>
+        <div class="complete-actions">
+          <button type="button" class="btn-whatsapp" id="complete-alert-whatsapp">📲 Copiar para WhatsApp</button>
+          <button type="button" class="btn-primary" id="complete-alert-close">Cerrar</button>
+        </div>
       </div>
     </div>
 
@@ -72,6 +129,25 @@
         <div id="settings-command-list" class="settings-list"></div>
         <p id="settings-status" class="settings-status" aria-live="polite"></p>
         <button type="button" id="settings-save" class="btn-primary settings-save">GUARDAR COMANDOS</button>
+      </div>
+    </div>
+
+    <div id="historial-overlay" class="overlay settings-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="historial-title">
+      <div class="settings-panel">
+        <div class="settings-head">
+          <div>
+            <p class="kicker">Jornada</p>
+            <h2 id="historial-title">Ver Historial</h2>
+          </div>
+          <button type="button" class="btn-ghost" id="historial-close">Volver</button>
+        </div>
+        <p class="muted settings-help">Cierres del día. Use 📲 para copiar el reporte a WhatsApp.</p>
+        <div id="historial-lista"></div>
+        <p id="historial-status" class="settings-status" aria-live="polite"></p>
+        <div class="historial-actions">
+          <button type="button" id="historial-exportar" class="btn-secondary">Exportar / Copiar</button>
+          <button type="button" id="historial-limpiar" class="btn-ghost">Limpiar historial</button>
+        </div>
       </div>
     </div>
 
@@ -134,6 +210,7 @@
       -->
       <button type="button" id="btn-estatus" class="btn-status">ESTATUS</button>
       <button type="button" id="btn-nueva-hoja" class="btn-secondary">🧹 Nueva Hoja</button>
+      <button type="button" id="btn-historial" class="btn-secondary">📋 Ver Historial</button>
     </section>
 
     <section class="panel count-panel" aria-label="Conteo táctil">
@@ -207,6 +284,8 @@
       <span id="mic-label">Toca para hablar</span>
     </button>
     </main>
+
+    <div id="copy-toast" class="copy-toast hidden" role="status" aria-live="polite">¡Reporte copiado al portapapeles!</div>
 
     <script src="/static/config.js"></script>
     <script src="/static/app.js"></script>

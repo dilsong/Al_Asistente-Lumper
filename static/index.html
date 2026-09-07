@@ -153,6 +153,40 @@
       </div>
     </div>
 
+    <div id="estatus-overlay" class="overlay hidden" role="dialog" aria-modal="true" aria-labelledby="estatus-title">
+      <div class="overlay-card estatus-card">
+        <p class="kicker">Consulta en tiempo real</p>
+        <h2 id="estatus-title">ESTATUS</h2>
+        <dl class="estatus-resumen">
+          <div>
+            <dt>Contenedor actual</dt>
+            <dd id="estatus-contenedor">—</dd>
+          </div>
+          <div>
+            <dt>Hojas procesadas</dt>
+            <dd id="estatus-hojas">0</dd>
+          </div>
+          <div>
+            <dt>SKUs</dt>
+            <dd id="estatus-skus">0</dd>
+          </div>
+          <div>
+            <dt>Cajas totales</dt>
+            <dd id="estatus-cajas">0</dd>
+          </div>
+          <div>
+            <dt>Paletas completas</dt>
+            <dd id="estatus-paletas-completas">0</dd>
+          </div>
+          <div>
+            <dt>Paletas parciales</dt>
+            <dd id="estatus-paletas-parciales">0</dd>
+          </div>
+        </dl>
+        <button type="button" class="btn-primary" id="estatus-close">Cerrar</button>
+      </div>
+    </div>
+
     <div id="sku-modal" class="overlay hidden" role="dialog" aria-modal="true">
       <div class="overlay-card wide">
         <p class="kicker">Coincidencias</p>
@@ -173,16 +207,11 @@
         </div>
       </div>
       <div class="top-actions">
-        <button type="button" id="btn-estatus" class="estatus-badge" title="Consultar estatus del contenedor">
-          ESTATUS
+        <button type="button" id="btn-settings" class="btn-settings" title="Configuración de comandos de voz" aria-label="Configuración">
+          ⚙️
         </button>
-        <div class="top-chips">
-          <button type="button" id="btn-settings" class="btn-settings" title="Configuración de comandos de voz" aria-label="Configuración">
-            ⚙️
-          </button>
-          <span id="license-chip" class="chip">Licencia</span>
-          <span id="sku-activo-chip" class="chip chip-dim">SKU —</span>
-        </div>
+        <span id="license-chip" class="chip">Licencia</span>
+        <span id="sku-activo-chip" class="chip chip-dim">SKU —</span>
       </div>
     </header>
 
@@ -203,22 +232,21 @@
     </section>
 
     <section class="action-stack" aria-label="Acciones de hoja">
-      <div class="toolbar toolbar-capture">
+      <div class="toolbar toolbar-row toolbar-capture">
         <label class="btn-primary file-btn file-btn-main">
-          📷 Escanear Hoja / Tomar Foto
+          📷 Tomar Foto
           <input id="file-input-camera" type="file" accept="image/*" capture="environment" hidden />
         </label>
-        <div class="toolbar-capture-row">
-          <label class="btn-secondary file-btn">
-            📁 Cargar Imagen
-            <input id="file-input-gallery" type="file" accept="image/*" hidden />
-          </label>
-          <button type="button" id="btn-sumar-hoja" class="btn-secondary">📄 Sumar Siguiente Hoja</button>
-        </div>
+        <label class="btn-secondary file-btn">
+          📁 Cargar Imagen
+          <input id="file-input-gallery" type="file" accept="image/*" hidden />
+        </label>
+        <button type="button" id="btn-sumar-hoja" class="btn-secondary">📄 Sumar Siguiente Hoja</button>
       </div>
-      <div class="toolbar toolbar-control">
+      <div class="toolbar toolbar-row toolbar-control">
         <button type="button" id="btn-cerrar-contenedor" class="btn-secondary btn-cerrar-contenedor">🚚 Cerrar Contenedor</button>
         <button type="button" id="btn-historial" class="btn-secondary">📋 Ver Historial</button>
+        <button type="button" id="btn-estatus" class="btn-estatus" title="Consultar estatus del contenedor">ESTATUS</button>
       </div>
     </section>
 

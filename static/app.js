@@ -1648,9 +1648,33 @@
     if (el) el.classList.toggle("hidden", !mostrar);
   }
 
+  function pintarEstatusModal(data) {
+    const kpis = data || estatusLocal();
+    const setText = (id, valor) => {
+      const el = $(id);
+      if (el) el.textContent = valor;
+    };
+    const hojas = hojasDelContenedor();
+    const esperadas = enteroNoNegativo(kpis.cajas_esperadas);
+    const contadas = enteroNoNegativo(kpis.cajas_contadas);
+    setText("estatus-contenedor", kpis.contenedor || state.inventario.contenedor || "Sin contenedor");
+    setText("estatus-hojas", String(hojas));
+    setText("estatus-skus", String(kpis.skus_totales || 0));
+    setText("estatus-cajas", esperadas ? `${contadas} / ${esperadas}` : String(contadas));
+    setText("estatus-paletas-completas", String(kpis.paletas_completas || 0));
+    setText("estatus-paletas-parciales", String(kpis.paletas_parciales || 0));
+  }
+
+  function mostrarEstatusModal(mostrar) {
+    const el = $("estatus-overlay");
+    if (el) el.classList.toggle("hidden", !mostrar);
+  }
+
   async function reportarEstatus() {
     const data = estatusLocal();
     aplicarSesion(data);
+    pintarEstatusModal(data);
+    mostrarEstatusModal(true);
     await responder(data.mensaje, { evento: "estatus", completo: data.completo });
   }
 
@@ -1971,6 +1995,14 @@
     $("btn-sumar-cajas").addEventListener("click", () => conteoManual("sumar"));
     $("btn-fijar-cajas").addEventListener("click", () => conteoManual("editar"));
     $("btn-estatus").addEventListener("click", () => reportarEstatus().catch((err) => responder(err.message)));
+    const estatusClose = $("estatus-close");
+    if (estatusClose) estatusClose.addEventListener("click", () => mostrarEstatusModal(false));
+    const estatusOverlay = $("estatus-overlay");
+    if (estatusOverlay) {
+      estatusOverlay.addEventListener("click", (event) => {
+        if (event.target === estatusOverlay) mostrarEstatusModal(false);
+      });
+    }
     const btnSumarHoja = $("btn-sumar-hoja");
     if (btnSumarHoja) btnSumarHoja.addEventListener("click", () => prepararSiguienteHoja());
     const btnCerrarContenedor = $("btn-cerrar-contenedor");

@@ -8,6 +8,85 @@
       "meta": {
         "evento": "boot_local"
       }
+    },
+    {
+      "id": "e8d1c76f-749f-487b-9472-9994a5d29d0f",
+      "rol": "al",
+      "texto": "Leyendo la hoja de papel…",
+      "ts": "2026-09-07T15:23:12",
+      "meta": {
+        "evento": "ocr_inicio"
+      }
+    },
+    {
+      "id": "fb34d158-823f-4b93-9c1c-93541ff34237",
+      "rol": "al",
+      "texto": "El documento no devolvió SKUs. Pruebe otro recorte o el modo demo.",
+      "ts": "2026-09-07T15:23:13",
+      "meta": {}
+    },
+    {
+      "id": "a25b6137-8ad2-4702-8e19-aa7d280da622",
+      "rol": "al",
+      "texto": "Leyendo la hoja de papel…",
+      "ts": "2026-09-07T15:23:30",
+      "meta": {
+        "evento": "ocr_inicio"
+      }
+    },
+    {
+      "id": "ed31daf1-1bb7-4a9f-b07f-6a49fbfcb768",
+      "rol": "al",
+      "texto": "El documento no devolvió SKUs. Pruebe otro recorte o el modo demo.",
+      "ts": "2026-09-07T15:23:30",
+      "meta": {}
+    },
+    {
+      "id": "fcd6d687-4b13-4266-9fc4-a9639af27571",
+      "rol": "al",
+      "texto": "SKU WIITTIEN seleccionado. Esperadas 1, contadas 2.",
+      "ts": "2026-09-07T15:24:23",
+      "meta": {}
+    },
+    {
+      "id": "f2554b5f-69fa-40fd-9023-5a6794bb096e",
+      "rol": "al",
+      "texto": "SKU WIITTIEN: 0 de 1 cajas.",
+      "ts": "2026-09-07T15:24:25",
+      "meta": {
+        "sku": "WIITTIEN",
+        "modo": "editar"
+      }
+    },
+    {
+      "id": "98d9b7c2-3741-4f56-bb9e-9aecd631caed",
+      "rol": "al",
+      "texto": "Faltan 1 SKUs por sacar, 1 cajas en total y 1 paletas en total.",
+      "ts": "2026-09-07T15:24:46",
+      "meta": {
+        "evento": "estatus",
+        "completo": false
+      }
+    },
+    {
+      "id": "27543892-14ff-4ae3-af0d-52760307473a",
+      "rol": "al",
+      "texto": "Llevas 0 paletas completas y ninguna parcial para este producto.",
+      "ts": "2026-09-07T15:25:03",
+      "meta": {
+        "sku": "WIITTIEN",
+        "evento": "paleta"
+      }
+    },
+    {
+      "id": "d47cb988-12df-4fa3-a8a2-57e2b20b7080",
+      "rol": "al",
+      "texto": "Faltan 1 SKUs por sacar, 1 cajas en total y 1 paletas en total.",
+      "ts": "2026-09-07T15:25:16",
+      "meta": {
+        "evento": "estatus",
+        "completo": false
+      }
     }
   ]
 }

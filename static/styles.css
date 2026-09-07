@@ -265,62 +265,41 @@ body {
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
   width: 100%;
-}
-
-.toolbar-control {
-  grid-template-columns: 1fr 1fr auto;
   align-items: stretch;
 }
 
 .toolbar-row .btn-secondary,
-.toolbar-row .btn-cerrar-contenedor,
+.toolbar-row .btn-estatus,
 .toolbar-row .file-btn {
   width: 100%;
   min-width: 0;
+  min-height: 56px;
   font-size: 0.82rem;
   line-height: 1.2;
   padding: 10px 8px;
 }
 
 .file-btn-main {
+  background: var(--amber);
+  color: #111827;
   box-shadow: 0 0 0 1px rgba(245, 179, 1, 0.35);
 }
 
 .btn-estatus {
-  width: auto;
-  min-width: 0;
-  min-height: 52px;
   border: 0;
   border-radius: 14px;
-  background: #166534;
-  color: #dcfce7;
+  background: #16a34a;
+  color: #ffffff;
   font-weight: 800;
-  font-size: 0.82rem;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  padding: 10px 14px;
   white-space: nowrap;
   cursor: pointer;
 }
 
 .btn-estatus:hover {
   background: #15803d;
-}
-
-.btn-cerrar-contenedor {
-  min-height: 52px;
-  border: 0;
-  border-radius: 14px;
-  background: #7c2d12;
-  color: #ffedd5;
-  font-weight: 800;
-  font-size: 0.95rem;
-  padding: 12px 14px;
-  cursor: pointer;
-}
-
-.btn-cerrar-contenedor:hover {
-  background: #9a3412;
+  color: #ffffff;
 }
 
 .btn-primary,
@@ -355,11 +334,6 @@ body {
 
 .btn-secondary:hover {
   background: #243044;
-}
-
-.btn-cerrar-contenedor:hover {
-  background: #9a3412;
-  color: #ffedd5;
 }
 
 .btn-ghost {

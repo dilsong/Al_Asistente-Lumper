@@ -8,6 +8,16 @@
       "meta": {
         "evento": "boot_local"
       }
+    },
+    {
+      "id": "8d239400-234a-4e2d-816d-41e8c6a349f7",
+      "rol": "al",
+      "texto": "Faltan 1 SKUs por sacar, 1 cajas en total y 1 paletas en total.",
+      "ts": "2026-09-07T16:09:46",
+      "meta": {
+        "evento": "estatus",
+        "completo": false
+      }
     }
   ]
 }

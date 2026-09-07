@@ -1,29 +1,10 @@
 {
   "mensajes": [
     {
-      "id": "34003b36-ce80-4c9b-bd43-4f8aa6ee3f80",
-      "rol": "al",
-      "texto": "Inventario recuperado del teléfono. Di Oye AL para continuar o cargue otro archivo.",
-      "ts": "2026-09-07T15:57:50",
-      "meta": {
-        "evento": "boot_local"
-      }
-    },
-    {
-      "id": "8d239400-234a-4e2d-816d-41e8c6a349f7",
+      "id": "971eaf44-42f2-459c-9d92-a83287bfd749",
       "rol": "al",
       "texto": "Faltan 1 SKUs por sacar, 1 cajas en total y 1 paletas en total.",
-      "ts": "2026-09-07T16:09:46",
-      "meta": {
-        "evento": "estatus",
-        "completo": false
-      }
-    },
-    {
-      "id": "1475b891-e7c2-4e4e-b12e-c4d0d92d2a56",
-      "rol": "al",
-      "texto": "Faltan 1 SKUs por sacar, 1 cajas en total y 1 paletas en total.",
-      "ts": "2026-09-07T16:14:54",
+      "ts": "2026-09-07T16:24:25",
       "meta": {
         "evento": "estatus",
         "completo": false

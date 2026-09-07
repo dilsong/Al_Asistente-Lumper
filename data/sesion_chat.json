@@ -1,3 +1,13 @@
 {
-  "mensajes": []
+  "mensajes": [
+    {
+      "id": "9fca9e0a-880e-4231-af57-dec730f4d551",
+      "rol": "al",
+      "texto": "Inventario recuperado del teléfono. Di Oye AL para continuar o cargue otro archivo.",
+      "ts": "2026-09-07T15:10:41",
+      "meta": {
+        "evento": "boot_local"
+      }
+    }
+  ]
 }

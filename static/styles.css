@@ -254,8 +254,21 @@ body {
 }
 
 .toolbar .btn-secondary,
+.toolbar .btn-cerrar-contenedor,
 .toolbar .file-btn {
   flex: 1 1 220px;
+}
+
+.btn-cerrar-contenedor {
+  min-height: 52px;
+  border: 0;
+  border-radius: 14px;
+  background: #7c2d12;
+  color: #ffedd5;
+  font-weight: 800;
+  font-size: 0.95rem;
+  padding: 12px 14px;
+  cursor: pointer;
 }
 
 .btn-primary,

@@ -125,6 +125,8 @@
     audioStream: null,
     cierreRegistrado: false,
     historialFecha: "",
+    modoSumarHoja: false,
+    ultimoCierre: null,
   };
 
   const $ = (id) => document.getElementById(id);
@@ -312,7 +314,61 @@
   }
 
   function inventarioVacio() {
-    return { contenedor: "", formato: "", fecha_carga: null, skus: [] };
+    return { contenedor: "", formato: "", fecha_carga: null, skus: [], hojasProcesadas: 0 };
+  }
+
+  function hojasDelContenedor(inventario) {
+    const data = inventario || state.inventario || inventarioVacio();
+    const n = enteroNoNegativo(data.hojasProcesadas);
+    if (n > 0) return n;
+    return (data.skus || []).length ? 1 : 0;
+  }
+
+  function asegurarHojas(inventario) {
+    const data = inventario || inventarioVacio();
+    if (!Array.isArray(data.skus)) data.skus = [];
+    data.hojasProcesadas = hojasDelContenedor(data);
+    return data;
+  }
+
+  function fusionarHojaAlContenedor(nueva) {
+    const incoming = nueva || inventarioVacio();
+    const actual = state.inventario || inventarioVacio();
+    if (!(actual.skus || []).length) {
+      return asegurarHojas({
+        contenedor: incoming.contenedor || "",
+        formato: incoming.formato || actual.formato || "",
+        fecha_carga: incoming.fecha_carga || new Date().toISOString().slice(0, 19),
+        skus: (incoming.skus || []).map(normalizarSkuItem).filter((item) => item.sku),
+        hojasProcesadas: 1,
+      });
+    }
+    if (!Array.isArray(actual.skus)) actual.skus = [];
+    const mapa = new Map();
+    actual.skus.forEach((item) => {
+      const key = normalizarCodigo(item.sku);
+      if (key) mapa.set(key, item);
+    });
+    (incoming.skus || []).forEach((raw) => {
+      const item = normalizarSkuItem(raw);
+      const key = normalizarCodigo(item.sku);
+      if (!key) return;
+      const exist = mapa.get(key);
+      if (exist) {
+        exist.cantidad_esperada += enteroNoNegativo(item.cantidad_esperada);
+        exist.contador += enteroNoNegativo(item.contador);
+        if (!enteroNoNegativo(exist.cajas_por_paleta) && enteroNoNegativo(item.cajas_por_paleta)) {
+          exist.cajas_por_paleta = enteroNoNegativo(item.cajas_por_paleta);
+        }
+        recalcularSku(exist);
+      } else {
+        actual.skus.push(item);
+        mapa.set(key, item);
+      }
+    });
+    if (!actual.contenedor && incoming.contenedor) actual.contenedor = incoming.contenedor;
+    actual.hojasProcesadas = hojasDelContenedor(actual) + 1;
+    return actual;
   }
 
   function leerHistorialContenedores() {
@@ -349,6 +405,7 @@
       totalCajas: enteroNoNegativo(row.totalCajas ?? row.total_cajas),
       paletasCompletas: enteroNoNegativo(row.paletasCompletas ?? row.total_paletas_completas),
       paletasParciales: enteroNoNegativo(row.paletasParciales ?? row.total_paletas_parciales),
+      hojasProcesadas: Math.max(1, enteroNoNegativo(row.hojasProcesadas ?? row.hojas_procesadas, 1)),
     };
   }
 
@@ -363,6 +420,7 @@
       totalCajas: kpis.cajas_contadas || 0,
       paletasCompletas: kpis.paletas_completas || 0,
       paletasParciales: kpis.paletas_parciales || 0,
+      hojasProcesadas: Math.max(1, hojasDelContenedor()),
     };
   }
 
@@ -375,7 +433,8 @@
       x.totalSkus === y.totalSkus &&
       x.totalCajas === y.totalCajas &&
       x.paletasCompletas === y.paletasCompletas &&
-      x.paletasParciales === y.paletasParciales
+      x.paletasParciales === y.paletasParciales &&
+      x.hojasProcesadas === y.hojasProcesadas
     );
   }
 
@@ -386,6 +445,7 @@
       "*AL — Cierre de contenedor*",
       `📅 Fecha: ${r.fecha}`,
       `📦 Contenedor: ${r.contenedor}`,
+      `📄 Hojas procesadas: ${r.hojasProcesadas}`,
       `🔢 Total SKUs: ${r.totalSkus}`,
       `📦 Total cajas: ${r.totalCajas}`,
       `✅ Paletas completas: ${r.paletasCompletas}`,
@@ -466,6 +526,7 @@
       [
         `*#${i + 1} ${row.contenedor}*`,
         `Hora: ${String(row.fecha).slice(11) || row.fecha}`,
+        `📄 Hojas procesadas: ${row.hojasProcesadas}`,
         `SKUs: ${row.totalSkus} · Cajas: ${row.totalCajas}`,
         `Paletas: ${row.paletasCompletas} completas · ${row.paletasParciales} parciales`,
       ].join("\n")
@@ -490,6 +551,7 @@
     return `<article class="settings-card">
       <p class="muted">#${numero} · ${escapar(r.fecha)}</p>
       <h3>Contenedor ${escapar(r.contenedor)}</h3>
+      <p>📄 Hojas procesadas: ${r.hojasProcesadas}</p>
       <p>${r.totalSkus} SKUs · ${r.totalCajas} cajas</p>
       <p>${r.paletasCompletas} paletas completas · ${r.paletasParciales} paletas parciales</p>
       <button type="button" class="btn-whatsapp" data-historial-idx="${idx}">📲 Copiar para WhatsApp</button>
@@ -578,14 +640,12 @@
     if (status) status.textContent = "Historial borrado.";
   }
 
-  function limpiarNuevaHoja() {
-    const ok = window.confirm("¿Deseas limpiar la pantalla para procesar una nueva hoja?");
-    if (!ok) return;
-    if ((state.inventario.skus || []).length) registrarCierreContenedor();
+  function resetearSesionContenedor() {
     state.inventario = inventarioVacio();
     state.skuActivo = null;
     state.filtro = "";
     state.cierreRegistrado = false;
+    state.modoSumarHoja = false;
     state.kpis = calcularKpis(state.inventario);
     persistirInventario();
     const filtro = $("tabla-filtro");
@@ -593,13 +653,36 @@
     setCajasCampo(0);
     const paleta = $("paleta-input");
     if (paleta) paleta.value = "0";
-    mostrarCompleto(false);
     const panel = $("inventario-panel");
     if (panel) panel.classList.remove("needs-sku");
     renderKpis();
     renderTabla();
     renderContenedor();
-    responder("Pantalla lista para una nueva hoja. Escanee o cargue la siguiente foto.");
+  }
+
+  function prepararSiguienteHoja() {
+    state.modoSumarHoja = true;
+    const hojas = hojasDelContenedor();
+    const siguiente = (state.inventario.skus || []).length ? hojas + 1 : 1;
+    responder(`Listo para sumar la hoja ${siguiente}. Tome o cargue la foto.`);
+    const camara = $("file-input-camera");
+    if (camara) camara.click();
+  }
+
+  async function cerrarContenedorManual() {
+    if (!(state.inventario.skus || []).length) {
+      await responder("No hay un contenedor abierto para cerrar.");
+      return;
+    }
+    const ok = window.confirm("¿Cerrar este contenedor de forma definitiva y guardar el consolidado?");
+    if (!ok) return;
+    const kpis = calcularKpis(state.inventario);
+    const mensaje = mensajeCierreDescarga(kpis);
+    state.ultimoCierre = construirRegistroCierre();
+    registrarCierreContenedor();
+    mostrarCompleto(true, mensaje);
+    await responder(mensaje, { evento: "completo" });
+    resetearSesionContenedor();
   }
 
   function calcularKpis(inventario) {
@@ -654,15 +737,17 @@
   function mensajeCierreDescarga(kpis) {
     const metricas = kpis || calcularKpis(state.inventario);
     const cajas = etiquetaCantidad(metricas.cajas_contadas, "caja", "cajas");
+    const hojas = hojasDelContenedor();
+    const textoHojas = hojas ? ` Hojas procesadas: ${hojas}.` : "";
     if (metricas.paletas_definidas) {
       const completas = etiquetaCantidad(metricas.paletas_completas, "paleta completa", "paletas completas");
       const parciales = etiquetaCantidad(metricas.paletas_parciales, "paleta parcial", "paletas parciales");
       return (
         `¡Término de la descarga! El contenedor se ha descargado por completo. ` +
-        `Se sacaron ${cajas}, ${completas} y ${parciales}.`
+        `Se sacaron ${cajas}, ${completas} y ${parciales}.${textoHojas}`
       );
     }
-    return `¡Término de la descarga! El contenedor se ha descargado por completo. Se sacaron ${cajas}. Las paletas no están definidas.`;
+    return `¡Término de la descarga! El contenedor se ha descargado por completo. Se sacaron ${cajas}. Las paletas no están definidas.${textoHojas}`;
   }
 
   function encontrarSku(sku) {
@@ -749,8 +834,13 @@
     const kpis = calcularKpis(state.inventario);
     const completo = Boolean(kpis.skus_totales) && kpis.cajas_pendientes === 0;
     let mensaje = "No hay un contenedor cargado.";
-    if (kpis.skus_totales && completo) mensaje = mensajeCierreDescarga(kpis);
-    else if (kpis.skus_totales && !kpis.paletas_definidas) {
+    if (kpis.skus_totales && completo) {
+      const hojas = hojasDelContenedor();
+      mensaje =
+        `No quedan cajas pendientes de las hojas actuales. ` +
+        `Contenedor ${kpis.contenedor || "actual"}: ${kpis.cajas_contadas} cajas en ${kpis.skus_totales} SKUs` +
+        `${hojas ? `, hoja ${hojas}` : ""}. Use Cerrar Contenedor cuando termine.`;
+    } else if (kpis.skus_totales && !kpis.paletas_definidas) {
       mensaje = `Faltan ${kpis.skus_pendientes} SKUs por sacar y ${kpis.cajas_pendientes} cajas en total (paletas no definidas).`;
     } else if (kpis.skus_totales) {
       mensaje = `Faltan ${kpis.skus_pendientes} SKUs por sacar, ${kpis.cajas_pendientes} cajas en total y ${kpis.paletas_pendientes} paletas en total.`;
@@ -848,6 +938,7 @@
       formato: "CSV",
       fecha_carga: new Date().toISOString().slice(0, 19),
       skus,
+      hojasProcesadas: skus.length ? 1 : 0,
     };
   }
 
@@ -867,6 +958,7 @@
       formato: fuente.formato || "JSON",
       fecha_carga: fuente.fecha_carga || new Date().toISOString().slice(0, 19),
       skus: (fuente.skus || []).map(normalizarSkuItem).filter((item) => item.sku),
+      hojasProcesadas: enteroNoNegativo(fuente.hojasProcesadas ?? fuente.hojas_procesadas),
     };
     return { inventario, skuActivo };
   }
@@ -886,18 +978,21 @@
     return nombre.endsWith(".json") || tipo.includes("json");
   }
 
-  function aplicarInventarioCargado(inventario, skuActivo) {
-    (inventario.skus || []).forEach(recalcularSku);
-    state.inventario = inventario;
+  function aplicarInventarioCargado(inventario, skuActivo, opciones = {}) {
+    const restaurar = Boolean(opciones.restaurar);
+    const acumular = !restaurar && ((state.inventario.skus || []).length > 0 || state.modoSumarHoja);
+    const destino = acumular ? fusionarHojaAlContenedor(inventario) : asegurarHojas(inventario);
+    (destino.skus || []).forEach(recalcularSku);
+    state.inventario = destino;
     const existe = skuActivo && encontrarSku(skuActivo);
     state.skuActivo = existe ? existe.sku : null;
-    state.kpis = calcularKpis(inventario);
+    state.kpis = calcularKpis(destino);
     state.cierreRegistrado = false;
+    state.modoSumarHoja = false;
     persistirInventario();
     renderKpis();
     renderTabla();
     renderContenedor();
-    mostrarCompleto(Boolean(state.kpis.skus_totales) && state.kpis.cajas_pendientes === 0);
   }
 
   async function cargarInventarioArchivo(file) {
@@ -921,11 +1016,12 @@
       throw new Error("El archivo no contiene SKUs válidos.");
     }
     aplicarInventarioCargado(inventario, skuActivo);
-    const cajas = state.kpis.cajas_esperadas || 0;
+    const hojas = hojasDelContenedor();
+    const kpis = state.kpis || {};
     await responder(
-      `Inventario local cargado. ${inventario.skus.length} SKUs y ${cajas} cajas esperadas${
-        inventario.contenedor ? ` en el contenedor ${inventario.contenedor}` : ""
-      }.`,
+      `Inventario local cargado. ${kpis.skus_totales || 0} SKUs y ${kpis.cajas_esperadas || 0} cajas esperadas` +
+        `${state.inventario.contenedor ? ` en el contenedor ${state.inventario.contenedor}` : ""}` +
+        `${hojas ? ` (Hoja ${hojas})` : ""}.`,
       { evento: "carga_local" }
     );
   }
@@ -938,6 +1034,7 @@
       contenedor: state.inventario.contenedor || "",
       formato: state.inventario.formato || "",
       fecha_carga: state.inventario.fecha_carga || null,
+      hojasProcesadas: hojasDelContenedor(),
       fecha_exportacion: new Date().toISOString(),
       sku_activo: state.skuActivo,
       kpis,
@@ -1160,7 +1257,7 @@
   }
 
   function aplicarSesion(payload) {
-    if (payload.inventario) state.inventario = payload.inventario;
+    if (payload.inventario) state.inventario = asegurarHojas(payload.inventario);
     (state.inventario.skus || []).forEach(recalcularSku);
     state.kpis = payload.kpis || calcularKpis(state.inventario);
     persistirInventario();
@@ -1226,9 +1323,13 @@
 
   function renderContenedor() {
     const id = state.inventario.contenedor || "Sin contenedor cargado";
+    const hojas = hojasDelContenedor();
+    const etiquetaHoja = hojas ? ` (Hoja ${hojas})` : "";
     $("container-label").textContent = state.inventario.contenedor
-      ? `Contenedor ${id}`
-      : "Sin contenedor cargado";
+      ? `Contenedor Nº ${id}${etiquetaHoja}`
+      : hojas
+        ? `Contenedor sin número${etiquetaHoja}`
+        : "Sin contenedor cargado";
     $("sku-activo-chip").textContent = state.skuActivo ? `SKU ${state.skuActivo}` : "SKU —";
     $("sku-activo-chip").className = state.skuActivo ? "chip chip-ok" : "chip chip-dim";
     const item = skuActivoItem();
@@ -1495,11 +1596,6 @@
     persistirInventario();
     renderContenedor();
     await responder(data.mensaje, { sku: data.sku.sku, modo });
-    if (data.kpis && data.kpis.skus_totales && data.kpis.cajas_pendientes === 0) {
-      registrarCierreContenedor();
-      mostrarCompleto(true);
-      await responder(mensajeCierreDescarga(data.kpis), { evento: "completo" });
-    }
   }
 
   async function aplicarConteoConSufijo(modo, cantidad, sufijo) {
@@ -1545,18 +1641,16 @@
     await responder(info.voz, { sku: item.sku, evento: "paletas" });
   }
 
-  function mostrarCompleto(mostrar) {
+  function mostrarCompleto(mostrar, mensaje) {
     const el = $("complete-alert");
     const msg = $("complete-alert-msg");
-    if (mostrar && msg) msg.textContent = mensajeCierreDescarga();
+    if (mostrar && msg) msg.textContent = mensaje || mensajeCierreDescarga();
     if (el) el.classList.toggle("hidden", !mostrar);
   }
 
   async function reportarEstatus() {
     const data = estatusLocal();
     aplicarSesion(data);
-    if (data.completo) registrarCierreContenedor();
-    mostrarCompleto(Boolean(data.completo));
     await responder(data.mensaje, { evento: "estatus", completo: data.completo });
   }
 
@@ -1834,8 +1928,14 @@
       throw new Error(data.detail);
     }
     if (!response.ok) throw new Error(data.detail || "No se pudo leer la hoja");
-    aplicarSesion(data);
-    await responder(data.mensaje, { evento: "carga_documento" });
+    const acumulando = (state.inventario.skus || []).length > 0 || state.modoSumarHoja;
+    aplicarInventarioCargado(data.inventario, data.sku_activo || data.skuActivo);
+    const hojas = hojasDelContenedor();
+    const kpis = state.kpis || {};
+    const mensaje = acumulando && hojas > 1
+      ? `Hoja ${hojas} sumada al contenedor ${state.inventario.contenedor || "actual"}. Acumulado: ${kpis.skus_totales || 0} SKUs y ${kpis.cajas_esperadas || 0} cajas.`
+      : data.mensaje || `Contenedor cargado. Hoja ${hojas || 1}.`;
+    await responder(mensaje, { evento: "carga_documento" });
   }
 
   async function cargarDemo() {
@@ -1863,15 +1963,20 @@
     const btnWhatsappCierre = $("complete-alert-whatsapp");
     if (btnWhatsappCierre) {
       btnWhatsappCierre.addEventListener("click", () => {
-        const registro = construirRegistroCierre() || leerHistorialContenedores().slice(-1)[0];
+        const registro =
+          state.ultimoCierre || construirRegistroCierre() || leerHistorialContenedores().slice(-1)[0];
         copiarTextoWhatsApp(textoWhatsAppCierre(registro));
       });
     }
     $("btn-sumar-cajas").addEventListener("click", () => conteoManual("sumar"));
     $("btn-fijar-cajas").addEventListener("click", () => conteoManual("editar"));
     $("btn-estatus").addEventListener("click", () => reportarEstatus().catch((err) => responder(err.message)));
-    const btnNuevaHoja = $("btn-nueva-hoja");
-    if (btnNuevaHoja) btnNuevaHoja.addEventListener("click", () => limpiarNuevaHoja());
+    const btnSumarHoja = $("btn-sumar-hoja");
+    if (btnSumarHoja) btnSumarHoja.addEventListener("click", () => prepararSiguienteHoja());
+    const btnCerrarContenedor = $("btn-cerrar-contenedor");
+    if (btnCerrarContenedor) {
+      btnCerrarContenedor.addEventListener("click", () => cerrarContenedorManual().catch((err) => responder(err.message)));
+    }
     const btnHistorial = $("btn-historial");
     if (btnHistorial) btnHistorial.addEventListener("click", abrirHistorial);
     const historialClose = $("historial-close");
@@ -1917,7 +2022,7 @@
     const sesionLocal = Boolean(local && local.inventario);
     const tieneLocal = Boolean(sesionLocal && (local.inventario.skus || []).length);
     if (sesionLocal) {
-      aplicarInventarioCargado(local.inventario, local.skuActivo);
+      aplicarInventarioCargado(local.inventario, local.skuActivo, { restaurar: true });
     }
 
     try {

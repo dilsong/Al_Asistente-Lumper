@@ -1650,31 +1650,38 @@
 
   function pintarEstatusModal(data) {
     const kpis = data || estatusLocal();
-    const setText = (id, valor) => {
-      const el = $(id);
-      if (el) el.textContent = valor;
-    };
+    const body = document.getElementById("contenido-estatus");
+    if (!body) return;
     const hojas = hojasDelContenedor();
     const esperadas = enteroNoNegativo(kpis.cajas_esperadas);
     const contadas = enteroNoNegativo(kpis.cajas_contadas);
-    setText("estatus-contenedor", kpis.contenedor || state.inventario.contenedor || "Sin contenedor");
-    setText("estatus-hojas", String(hojas));
-    setText("estatus-skus", String(kpis.skus_totales || 0));
-    setText("estatus-cajas", esperadas ? `${contadas} / ${esperadas}` : String(contadas));
-    setText("estatus-paletas-completas", String(kpis.paletas_completas || 0));
-    setText("estatus-paletas-parciales", String(kpis.paletas_parciales || 0));
+    const contenedor = kpis.contenedor || state.inventario.contenedor || "Sin contenedor";
+    const cajas = esperadas ? `${contadas} / ${esperadas}` : String(contadas);
+    body.innerHTML = [
+      `<p><strong>Contenedor</strong><span>${contenedor}</span></p>`,
+      `<p><strong>Hojas procesadas</strong><span>${hojas}</span></p>`,
+      `<p><strong>SKUs</strong><span>${kpis.skus_totales || 0}</span></p>`,
+      `<p><strong>Cajas</strong><span>${cajas}</span></p>`,
+      `<p><strong>Paletas completas</strong><span>${kpis.paletas_completas || 0}</span></p>`,
+      `<p><strong>Paletas parciales</strong><span>${kpis.paletas_parciales || 0}</span></p>`,
+    ].join("");
   }
 
   function mostrarEstatusModal(mostrar) {
-    const el = $("estatus-overlay");
-    if (el) el.classList.toggle("hidden", !mostrar);
+    const el = document.getElementById("modal-estatus");
+    if (el) el.style.display = mostrar ? "flex" : "none";
+  }
+
+  function cerrarModalEstatus() {
+    mostrarEstatusModal(false);
   }
 
   async function reportarEstatus() {
     const data = estatusLocal();
     aplicarSesion(data);
     pintarEstatusModal(data);
-    mostrarEstatusModal(true);
+    const modal = document.getElementById("modal-estatus");
+    if (modal) modal.style.display = "flex";
     await responder(data.mensaje, { evento: "estatus", completo: data.completo });
   }
 
@@ -1995,12 +2002,10 @@
     $("btn-sumar-cajas").addEventListener("click", () => conteoManual("sumar"));
     $("btn-fijar-cajas").addEventListener("click", () => conteoManual("editar"));
     $("btn-estatus").addEventListener("click", () => reportarEstatus().catch((err) => responder(err.message)));
-    const estatusClose = $("estatus-close");
-    if (estatusClose) estatusClose.addEventListener("click", () => mostrarEstatusModal(false));
-    const estatusOverlay = $("estatus-overlay");
-    if (estatusOverlay) {
-      estatusOverlay.addEventListener("click", (event) => {
-        if (event.target === estatusOverlay) mostrarEstatusModal(false);
+    const modalEstatus = document.getElementById("modal-estatus");
+    if (modalEstatus) {
+      modalEstatus.addEventListener("click", (event) => {
+        if (event.target === modalEstatus) cerrarModalEstatus();
       });
     }
     const btnSumarHoja = $("btn-sumar-hoja");
@@ -2104,6 +2109,8 @@
       navigator.serviceWorker.register("/static/sw.js").catch(() => {});
     }
   }
+
+  window.cerrarModalEstatus = cerrarModalEstatus;
 
   iniciar();
 })();

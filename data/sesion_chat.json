@@ -18,6 +18,16 @@
         "evento": "estatus",
         "completo": false
       }
+    },
+    {
+      "id": "1475b891-e7c2-4e4e-b12e-c4d0d92d2a56",
+      "rol": "al",
+      "texto": "Faltan 1 SKUs por sacar, 1 cajas en total y 1 paletas en total.",
+      "ts": "2026-09-07T16:14:54",
+      "meta": {
+        "evento": "estatus",
+        "completo": false
+      }
     }
   ]
 }

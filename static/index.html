@@ -22,7 +22,7 @@
         },
       };
     </script>
-    <link rel="stylesheet" href="/static/styles.css" />
+    <link rel="stylesheet" href="/static/styles.css?v=2.4" />
     <style>
       .count-field {
         justify-content: flex-end !important;
@@ -150,40 +150,6 @@
           <button type="button" id="historial-resumen-dia" class="btn-whatsapp">📲 Copiar Resumen del Día</button>
           <button type="button" id="historial-limpiar" class="btn-ghost">Limpiar historial</button>
         </div>
-      </div>
-    </div>
-
-    <div id="estatus-overlay" class="overlay hidden" role="dialog" aria-modal="true" aria-labelledby="estatus-title">
-      <div class="overlay-card estatus-card">
-        <p class="kicker">Consulta en tiempo real</p>
-        <h2 id="estatus-title">ESTATUS</h2>
-        <dl class="estatus-resumen">
-          <div>
-            <dt>Contenedor actual</dt>
-            <dd id="estatus-contenedor">—</dd>
-          </div>
-          <div>
-            <dt>Hojas procesadas</dt>
-            <dd id="estatus-hojas">0</dd>
-          </div>
-          <div>
-            <dt>SKUs</dt>
-            <dd id="estatus-skus">0</dd>
-          </div>
-          <div>
-            <dt>Cajas totales</dt>
-            <dd id="estatus-cajas">0</dd>
-          </div>
-          <div>
-            <dt>Paletas completas</dt>
-            <dd id="estatus-paletas-completas">0</dd>
-          </div>
-          <div>
-            <dt>Paletas parciales</dt>
-            <dd id="estatus-paletas-parciales">0</dd>
-          </div>
-        </dl>
-        <button type="button" class="btn-primary" id="estatus-close">Cerrar</button>
       </div>
     </div>
 
@@ -324,7 +290,16 @@
 
     <div id="copy-toast" class="copy-toast hidden" role="status" aria-live="polite">¡Reporte copiado al portapapeles!</div>
 
+    <div id="modal-estatus" class="modal-overlay" style="display: none;">
+      <div class="modal-content">
+        <span class="close-modal" onclick="cerrarModalEstatus()">&times;</span>
+        <h2>📊 Estatus del Contenedor</h2>
+        <div id="contenido-estatus"></div>
+        <button onclick="cerrarModalEstatus()" class="btn-oscuro" style="margin-top:15px; width:100%;">Cerrar</button>
+      </div>
+    </div>
+
     <script src="/static/config.js"></script>
-    <script src="/static/app.js"></script>
+    <script src="/static/app.js?v=2.4"></script>
   </body>
 </html>

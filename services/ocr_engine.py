@@ -197,7 +197,7 @@ def _liberar_memoria_ocr(*objetos: Any) -> None:
 
 
 def _abrir_hoja(data: bytes) -> Image.Image:
-    """Abre la foto, aplica EXIF y gira hojas landscape capturadas en vertical."""
+    """Abre la foto, aplica EXIF y gira 90° horario si viene apaisada."""
     image = Image.open(io.BytesIO(data))
     image = ImageOps.exif_transpose(image)
     if image.mode != "RGB":
@@ -205,8 +205,8 @@ def _abrir_hoja(data: bytes) -> Image.Image:
         image.close()
         image = rgb
     ancho, alto = image.size
-    if alto > ancho * 1.08:
-        rotada = image.rotate(90, expand=True)
+    if ancho > alto:
+        rotada = image.rotate(-90, expand=True)
         image.close()
         image = rotada
     return image
@@ -345,15 +345,21 @@ def extraer_texto_easyocr(imagen: Image.Image) -> str:
 
 
 VISION_PROMPT = (
-    "You extract the product table from a warehouse Purchase Order Report or Inbound Receiving Report photo. "
-    "The photo may be rotated; read the page regardless of orientation. "
-    "Return ONLY valid JSON with this exact shape: "
-    '{"contenedor":"","skus":[{"sku":"","descripcion":"","cajas_esperadas":0}]}. '
-    "sku is the Product / SKU code (example 1015223027 or P0845170-1). "
-    "descripcion is the SKU Description / Description column. "
-    "cajas_esperadas is the QTY / Total Cases / Exp Eaches integer (boxes expected). "
-    "contenedor is Trailer or Other Reference Number if visible. "
-    "Read every data row of the table. Ignore barcodes, headers, handwritten notes and footer totals."
+    "You read a warehouse Inbound Receiving Report or Purchase Order Report photo. "
+    "If the page is landscape, treat it as rotated 90 degrees clockwise so you read top to bottom. "
+    "Return ONLY a JSON array of product rows. No markdown, no extra keys. "
+    "Format: "
+    '[{"sku":"1015223027","descripcion":"HUSKY 52-13 MATTE BLK COMBO","esperado":54}]. '
+    "STRICT RULES: "
+    "1) Ignore the HEADER block completely: ASN, Vendor/DC, Trailer, BOL, header SKUs count, "
+    "header Total Cases, Full Pallets, Partial Pallets, Dock Door. "
+    "ASN (example 14881711) is NEVER the product sku. Trailer (example KKFU7868019) is NEVER the sku. "
+    "2) sku MUST come from the DATA TABLE column headed SKU (the value under that header on each product row). "
+    "Example: 1015223027. "
+    "3) descripcion MUST come from the SKU Description column on that same row. "
+    "4) esperado MUST come from Exp Eaches on that product row (or Total Cases on the same row). "
+    "Never use Full Pallets. In the sample sheet esperado is 54, not 27. "
+    "One object per product data row."
 )
 
 
@@ -363,14 +369,31 @@ def _parsear_json_modelo(crudo: str) -> dict[str, Any] | None:
     texto = crudo.strip()
     if texto.startswith("```"):
         texto = re.sub(r"^```(?:json)?", "", texto).removesuffix("```").strip()
-    match = re.search(r"\{.*\}", texto, re.S)
-    if not match:
-        return None
-    try:
-        data = json.loads(match.group(0))
-    except json.JSONDecodeError:
-        return None
-    return data if isinstance(data, dict) else None
+    data: Any = None
+    if texto.startswith("["):
+        match = re.search(r"\[.*\]", texto, re.S)
+        if match:
+            try:
+                data = json.loads(match.group(0))
+            except json.JSONDecodeError:
+                data = None
+    if data is None:
+        match = re.search(r"\{.*\}", texto, re.S)
+        if not match:
+            return None
+        try:
+            data = json.loads(match.group(0))
+        except json.JSONDecodeError:
+            return None
+    if isinstance(data, list):
+        return {"skus": data}
+    if isinstance(data, dict):
+        if isinstance(data.get("skus"), list):
+            return data
+        if data.get("sku") or data.get("esperado") is not None:
+            return {"skus": [data]}
+        return data
+    return None
 
 
 def _clave_gemini() -> str:
@@ -547,34 +570,102 @@ def _log_estado_claves() -> None:
 _log_estado_claves()
 
 
+def _qty_esperado_fila(fila: dict[str, Any]) -> int:
+    """Cajas de la fila: Exp Eaches / esperado. Nunca Full Pallets."""
+    prohibidas = {
+        "full_pallets",
+        "full pallets",
+        "paletas",
+        "paletas_completas",
+        "pallets",
+        "tihi",
+        "ti/hi",
+        "rec_eaches",
+        "rec eaches",
+    }
+    for clave in (
+        "esperado",
+        "exp_eaches",
+        "Exp Eaches",
+        "exp eaches",
+        "total_cases",
+        "Total Cases",
+        "cajas_esperadas",
+        "cantidad_esperada",
+        "qty",
+        "QTY",
+        "cantidad",
+    ):
+        if clave not in fila:
+            continue
+        if str(clave).strip().lower() in prohibidas:
+            continue
+        valor = fila.get(clave)
+        if valor in (None, ""):
+            continue
+        try:
+            n = int(float(str(valor).replace(",", "")))
+        except ValueError:
+            continue
+        if n > 0:
+            return n
+    return 0
+
+
+def _parece_encabezado_no_sku(sku: str) -> bool:
+    """Descarta ASN, Trailer ISO y etiquetas de cabecera."""
+    codigo = _sanear_sku(sku)
+    if CONTENEDOR_RE.fullmatch(codigo):
+        return True
+    encabezado = {
+        "ASN",
+        "BOL",
+        "TRAILER",
+        "VENDOR",
+        "SKU",
+        "SKUS",
+        "PALLET",
+        "PALLETS",
+        "EACHES",
+        "CASES",
+        "INBOUND",
+        "RECEIVING",
+        "REPORT",
+        "HUSKY",
+    }
+    return codigo in encabezado
+
+
 def inventario_desde_vision(payload: dict[str, Any], formato: str | None = None) -> dict[str, Any]:
     skus: list[dict[str, Any]] = []
     vistos: set[str] = set()
-    for fila in payload.get("skus") or payload.get("items") or []:
+    filas = payload.get("skus") if isinstance(payload, dict) else payload
+    if isinstance(payload, list):
+        filas = payload
+    for fila in filas or []:
         if not isinstance(fila, dict):
             continue
-        sku = _sanear_sku(str(fila.get("sku") or fila.get("SKU") or fila.get("Product") or ""))
+        sku = _sanear_sku(str(fila.get("sku") or fila.get("SKU") or ""))
         if not sku or len(sku) < 4 or sku in vistos:
             continue
-        qty_raw = (
-            fila.get("cajas_esperadas")
-            or fila.get("qty")
-            or fila.get("QTY")
-            or fila.get("cantidad")
-            or fila.get("cantidad_esperada")
-            or 0
+        if _parece_encabezado_no_sku(sku):
+            continue
+        qty = _qty_esperado_fila(fila)
+        desc = str(
+            fila.get("descripcion")
+            or fila.get("SKU Description")
+            or fila.get("Description")
+            or fila.get("description")
+            or sku
         )
-        try:
-            qty = int(float(str(qty_raw).replace(",", "") or 0))
-        except ValueError:
-            qty = 0
-        desc = str(fila.get("descripcion") or fila.get("Description") or fila.get("description") or sku)
         vistos.add(sku)
         skus.append(_sku_item(sku, qty, desc[:80]))
-    contenedor = str(payload.get("contenedor") or payload.get("trailer") or "").strip()
+    contenedor = ""
+    if isinstance(payload, dict):
+        contenedor = str(payload.get("contenedor") or payload.get("trailer") or "").strip()
     return {
         "contenedor": re.sub(r"\s+", "", contenedor.upper()),
-        "formato": (formato or "A").upper(),
+        "formato": (formato or "B").upper(),
         "fecha_carga": _ahora(),
         "skus": skus,
     }
@@ -708,7 +799,10 @@ def _es_ruido_sku(token: str) -> bool:
         "REPORT",
         "INBOUND",
         "RECEIVING",
+        "ASN",
+        "BOL",
         "TRAILER",
+        "VENDOR",
         "PRODUCT",
         "OTHER",
         "REFERENCE",

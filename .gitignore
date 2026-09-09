@@ -10,3 +10,4 @@ data/*.csv
 .idea/
 .vscode/
 data/sesion_chat.json
+data/inventario_sesion.json

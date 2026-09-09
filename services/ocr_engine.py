@@ -295,7 +295,7 @@ def extraer_texto(data: bytes) -> str:
         _liberar_memoria_ocr(imagen)
 
 
-def _imagen_a_jpeg_b64(data: bytes) -> str:
+def _imagen_a_jpeg_bytes(data: bytes) -> bytes:
     image = _abrir_hoja(data)
     try:
         w, h = image.size
@@ -308,9 +308,13 @@ def _imagen_a_jpeg_b64(data: bytes) -> str:
             )
         buf = io.BytesIO()
         image.save(buf, format="JPEG", quality=70, optimize=True)
-        return base64.b64encode(buf.getvalue()).decode("ascii")
+        return buf.getvalue()
     finally:
         image.close()
+
+
+def _imagen_a_jpeg_b64(data: bytes) -> str:
+    return base64.b64encode(_imagen_a_jpeg_bytes(data)).decode("ascii")
 
 
 _easy_reader = None
@@ -499,81 +503,139 @@ def extraer_json_gemini(data: bytes) -> dict[str, Any] | None:
     api_key = _clave_gemini()
     if not api_key:
         return None
-    modelos = ["gemini-1.5-flash", "gemini-1.5-pro"]
+    modelos = _modelos_gemini_a_usar(api_key)
     parsed = extraer_json_gemini_sdk(data, api_key, modelos)
     if parsed:
         return parsed
     imagen_b64 = _imagen_a_jpeg_b64(data)
     ultimo_error = ""
-    for modelo in modelos:
-        cuerpo = {
-            "contents": [
-                {
-                    "parts": [
-                        {"text": VISION_PROMPT},
-                        {"inline_data": {"mime_type": "image/jpeg", "data": imagen_b64}},
-                    ]
-                }
-            ],
-            "generationConfig": {"temperature": 0, "responseMimeType": "application/json"},
-        }
-        url = (
-            f"https://generativelanguage.googleapis.com/v1beta/models/{modelo}:generateContent"
-            f"?key={api_key}"
-        )
-        try:
-            payload = _post_json(url, cuerpo, {"Content-Type": "application/json"})
-            if payload.get("error"):
-                raise RuntimeError(payload["error"])
-            candidatos = payload.get("candidates") or []
-            if not candidatos:
-                raise RuntimeError(f"sin candidates: {json.dumps(payload)[:500]}")
-            crudo = candidatos[0]["content"]["parts"][0]["text"]
-            parsed = _parsear_json_modelo(crudo)
-            if parsed:
-                print(f"[AL OCR] Visión Gemini respondió ({modelo}).", flush=True)
-                return parsed
-            raise RuntimeError("respuesta sin JSON de SKUs")
-        except Exception as exc:
-            ultimo_error = f"Gemini ({modelo}) falló: {_detalle_error(exc)}"
-            print(f"[AL OCR] {ultimo_error}", flush=True)
-            continue
+    headers = {"Content-Type": "application/json", "x-goog-api-key": api_key}
+    for modelo in modelos[:4]:
+        for version in ("v1beta", "v1"):
+            cuerpo = {
+                "contents": [
+                    {
+                        "parts": [
+                            {"text": VISION_PROMPT},
+                            {"inline_data": {"mime_type": "image/jpeg", "data": imagen_b64}},
+                        ]
+                    }
+                ],
+                "generationConfig": {"temperature": 0, "responseMimeType": "application/json"},
+            }
+            url = (
+                f"https://generativelanguage.googleapis.com/{version}/models/{modelo}:generateContent"
+                f"?key={api_key}"
+            )
+            try:
+                payload = _post_json(url, cuerpo, headers)
+                if payload.get("error"):
+                    raise RuntimeError(payload["error"])
+                candidatos = payload.get("candidates") or []
+                if not candidatos:
+                    raise RuntimeError(f"sin candidates: {json.dumps(payload)[:500]}")
+                crudo = candidatos[0]["content"]["parts"][0]["text"]
+                parsed = _parsear_json_modelo(crudo)
+                if parsed:
+                    print(f"[AL OCR] Visión Gemini respondió ({modelo}).", flush=True)
+                    return parsed
+                raise RuntimeError("respuesta sin JSON de SKUs")
+            except Exception as exc:
+                ultimo_error = f"Gemini ({modelo}) falló: {_detalle_error(exc)}"
+                continue
     if ultimo_error:
-        _ERRORES_VISION.append(ultimo_error)
+        _registrar_error_vision(ultimo_error)
     return None
+
+
+_MODELOS_GEMINI_CACHE: list[str] | None = None
+
+
+def _modelos_gemini_a_usar(api_key: str) -> list[str]:
+    global _MODELOS_GEMINI_CACHE
+    if _MODELOS_GEMINI_CACHE:
+        return _MODELOS_GEMINI_CACHE
+    encontrados = _listar_modelos_gemini(api_key)
+    flash = [m for m in encontrados if "flash" in m.lower() and "image" not in m.lower()]
+    pro = [m for m in encontrados if "pro" in m.lower() and "flash" not in m.lower()]
+    ordenados = []
+    for nombre in flash + pro:
+        if nombre not in ordenados:
+            ordenados.append(nombre)
+    if ordenados:
+        print(f"[AL OCR] Modelos Gemini disponibles: {', '.join(ordenados[:6])}", flush=True)
+        _MODELOS_GEMINI_CACHE = ordenados
+        return ordenados
+    fallback = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.5-pro"]
+    print("[AL OCR] ListModels vacío; se usará gemini-2.5-flash y gemini-2.0-flash.", flush=True)
+    _MODELOS_GEMINI_CACHE = fallback
+    return fallback
+
+
+def _listar_modelos_gemini(api_key: str) -> list[str]:
+    nombres: list[str] = []
+    for version in ("v1beta", "v1"):
+        url = f"https://generativelanguage.googleapis.com/{version}/models?key={api_key}"
+        try:
+            payload = _get_json(url, {"x-goog-api-key": api_key})
+            for modelo in payload.get("models") or []:
+                metodos = modelo.get("supportedGenerationMethods") or []
+                if "generateContent" not in metodos:
+                    continue
+                corto = str(modelo.get("name") or "").split("/")[-1]
+                if not corto or corto in nombres:
+                    continue
+                if any(x in corto.lower() for x in ("embed", "imagen", "tts", "audio", "robotics")):
+                    continue
+                nombres.append(corto)
+            if nombres:
+                break
+        except Exception:
+            continue
+    return nombres
+
+
+def _get_json(url: str, headers: dict[str, str] | None = None) -> dict[str, Any]:
+    try:
+        import requests
+
+        resp = requests.get(url, headers=headers or {}, timeout=30)
+        if resp.status_code >= 400:
+            raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:800]}")
+        return resp.json()
+    except ImportError:
+        req = urllib.request.Request(url, headers=headers or {}, method="GET")
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read().decode("utf-8"))
 
 
 def extraer_json_gemini_sdk(data: bytes, api_key: str, modelos: list[str]) -> dict[str, Any] | None:
     try:
-        import google.generativeai as genai
+        from google import genai
+        from google.genai import types
     except Exception:
         return None
-    imagen = None
     try:
-        genai.configure(api_key=api_key)
-        imagen = _abrir_hoja(data)
-        for modelo in modelos:
+        cliente = genai.Client(api_key=api_key)
+        jpeg = _imagen_a_jpeg_bytes(data)
+        parte = types.Part.from_bytes(data=jpeg, mime_type="image/jpeg")
+        config = types.GenerateContentConfig(temperature=0, response_mime_type="application/json")
+        for modelo in modelos[:4]:
             try:
-                cliente = genai.GenerativeModel(modelo)
-                resp = cliente.generate_content(
-                    [VISION_PROMPT, imagen],
-                    generation_config={"temperature": 0, "response_mime_type": "application/json"},
+                resp = cliente.models.generate_content(
+                    model=modelo,
+                    contents=[VISION_PROMPT, parte],
+                    config=config,
                 )
                 parsed = _parsear_json_modelo(getattr(resp, "text", "") or "")
                 if parsed:
-                    print(f"[AL OCR] Visión Gemini SDK respondió ({modelo}).", flush=True)
+                    print(f"[AL OCR] Visión Gemini respondió ({modelo}).", flush=True)
                     return parsed
             except Exception as exc:
-                print(f"[AL OCR] Gemini SDK ({modelo}) falló: {_detalle_error(exc)}", flush=True)
+                print(f"[AL OCR] Gemini ({modelo}) falló: {_detalle_error(exc)}", flush=True)
                 continue
     except Exception as exc:
-        print(f"[AL OCR] Gemini SDK no disponible: {_detalle_error(exc)}", flush=True)
-    finally:
-        if imagen is not None:
-            try:
-                imagen.close()
-            except Exception:
-                pass
+        print(f"[AL OCR] Cliente google.genai: {_detalle_error(exc)}", flush=True)
     return None
 
 

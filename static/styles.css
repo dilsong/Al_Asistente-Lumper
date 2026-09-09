@@ -305,6 +305,55 @@ body {
   color: #ffffff !important;
 }
 
+.modal-cargando {
+  position: fixed;
+  inset: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: rgba(2, 6, 23, 0.82);
+  z-index: 90;
+  padding: 16px;
+}
+
+.modal-cargando-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  background: #121a2b;
+  border: 1px solid #2a3550;
+  border-radius: 20px;
+  padding: 28px 24px;
+  min-width: min(280px, 90vw);
+  text-align: center;
+}
+
+.reloj-arena {
+  font-size: 3rem;
+  line-height: 1;
+  animation: girar-reloj 1.6s ease-in-out infinite;
+}
+
+#texto-cargando {
+  margin: 0;
+  color: #f8fafc;
+  font-weight: 800;
+  font-size: 1rem;
+}
+
+@keyframes girar-reloj {
+  0% {
+    transform: rotate(0deg) scale(1);
+  }
+  50% {
+    transform: rotate(180deg) scale(1.08);
+  }
+  100% {
+    transform: rotate(360deg) scale(1);
+  }
+}
+
 .modal-overlay {
   position: fixed;
   inset: 0;

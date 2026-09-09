@@ -22,7 +22,7 @@
         },
       };
     </script>
-    <link rel="stylesheet" href="/static/styles.css?v=2.7" />
+    <link rel="stylesheet" href="/static/styles.css?v=2.8" />
     <style>
       .count-field {
         justify-content: flex-end !important;
@@ -293,6 +293,13 @@
 
     <div id="copy-toast" class="copy-toast hidden" role="status" aria-live="polite">¡Reporte copiado al portapapeles!</div>
 
+    <div id="modal-cargando" class="modal-cargando" style="display: none;" role="status" aria-live="polite" aria-busy="true">
+      <div class="modal-cargando-card">
+        <div class="reloj-arena" aria-hidden="true">⌛</div>
+        <p id="texto-cargando">⌛ Procesando hoja de recepción...</p>
+      </div>
+    </div>
+
     <div id="modal-estatus" class="modal-overlay" style="display: none;">
       <div class="modal-content">
         <span class="close-modal" onclick="cerrarModalEstatus()">&times;</span>
@@ -303,6 +310,6 @@
     </div>
 
     <script src="/static/config.js"></script>
-    <script src="/static/app.js?v=2.7"></script>
+    <script src="/static/app.js?v=2.8"></script>
   </body>
 </html>

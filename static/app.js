@@ -2083,6 +2083,18 @@
     }
   }
 
+  function mostrarCargando(texto) {
+    const modal = $("modal-cargando");
+    const label = $("texto-cargando");
+    if (label) label.textContent = texto || "⌛ Procesando hoja de recepción...";
+    if (modal) modal.style.display = "flex";
+  }
+
+  function ocultarCargando() {
+    const modal = $("modal-cargando");
+    if (modal) modal.style.display = "none";
+  }
+
   function enlazarCargaHoja(id) {
     const input = $(id);
     if (!input) return;
@@ -2090,32 +2102,41 @@
     input.addEventListener("change", (event) => {
       const file = event.target.files && event.target.files[0];
       event.target.value = "";
-      if (file) subirDocumento(file).catch((err) => responder(err.message));
+      if (!file) return;
+      mostrarCargando("⌛ Procesando hoja de recepción...");
+      subirDocumento(file).catch((err) => responder(err.message));
     });
   }
 
   async function subirDocumento(file) {
+    mostrarCargando("⌛ Procesando hoja de recepción...");
     desbloquearVozIos();
-    await pushChat("al", "Comprimiendo y leyendo la hoja de papel…", { evento: "ocr_inicio" });
-    const compacta = await comprimirImagenCliente(file);
-    const form = new FormData();
-    form.append("archivo", compacta, compacta.name || "hoja.jpg");
-    form.append("file", compacta, compacta.name || "hoja.jpg");
-    const response = await fetch("/api/ocr/upload", { method: "POST", body: form });
-    const data = await response.json().catch(() => ({}));
-    if (response.status === 403 && data.bloqueado) {
-      bloquearLicencia(data.licencia || data);
-      throw new Error(data.detail);
+    try {
+      await pushChat("al", "Comprimiendo y leyendo la hoja de papel…", { evento: "ocr_inicio" });
+      mostrarCargando("⌛ Comprimiendo imagen...");
+      const compacta = await comprimirImagenCliente(file);
+      mostrarCargando("⌛ Leyendo hoja de recepción...");
+      const form = new FormData();
+      form.append("archivo", compacta, compacta.name || "hoja.jpg");
+      form.append("file", compacta, compacta.name || "hoja.jpg");
+      const response = await fetch("/api/ocr/upload", { method: "POST", body: form });
+      const data = await response.json().catch(() => ({}));
+      if (response.status === 403 && data.bloqueado) {
+        bloquearLicencia(data.licencia || data);
+        throw new Error(data.detail);
+      }
+      if (!response.ok) throw new Error(data.detail || "No se pudo leer la hoja");
+      const acumulando = (state.inventario.skus || []).length > 0 || state.modoSumarHoja;
+      aplicarInventarioCargado(data.inventario, data.sku_activo || data.skuActivo);
+      const hojas = hojasDelContenedor();
+      const kpis = state.kpis || {};
+      const mensaje = acumulando && hojas > 1
+        ? `Hoja ${hojas} sumada al contenedor ${state.inventario.contenedor || "actual"}. Acumulado: ${kpis.skus_totales || 0} SKUs y ${kpis.cajas_esperadas || 0} cajas.`
+        : data.mensaje || `Contenedor cargado. Hoja ${hojas || 1}.`;
+      await responder(mensaje, { evento: "carga_documento" });
+    } finally {
+      ocultarCargando();
     }
-    if (!response.ok) throw new Error(data.detail || "No se pudo leer la hoja");
-    const acumulando = (state.inventario.skus || []).length > 0 || state.modoSumarHoja;
-    aplicarInventarioCargado(data.inventario, data.sku_activo || data.skuActivo);
-    const hojas = hojasDelContenedor();
-    const kpis = state.kpis || {};
-    const mensaje = acumulando && hojas > 1
-      ? `Hoja ${hojas} sumada al contenedor ${state.inventario.contenedor || "actual"}. Acumulado: ${kpis.skus_totales || 0} SKUs y ${kpis.cajas_esperadas || 0} cajas.`
-      : data.mensaje || `Contenedor cargado. Hoja ${hojas || 1}.`;
-    await responder(mensaje, { evento: "carga_documento" });
   }
 
   async function cargarDemo() {

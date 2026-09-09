@@ -661,6 +661,20 @@
     renderContenedor();
   }
 
+  function limpiarInventarioSesion() {
+    if (!(state.inventario.skus || []).length) {
+      responder("No hay inventario de sesión para limpiar.");
+      return;
+    }
+    const ok = window.confirm(
+      "¿Limpiar el inventario de sesión? No se guardará en el historial. Úselo si la hoja cargó mal o no era la correcta."
+    );
+    if (!ok) return;
+    mostrarCompleto(false);
+    resetearSesionContenedor();
+    responder("Inventario de sesión limpio. Cargue otra hoja.");
+  }
+
   function prepararSiguienteHoja() {
     desbloquearVozIos();
     state.modoSumarHoja = true;
@@ -2127,6 +2141,10 @@
       state.filtro = event.target.value;
       renderTabla();
     });
+    const btnLimpiarInventario = $("btn-limpiar-inventario");
+    if (btnLimpiarInventario) {
+      btnLimpiarInventario.addEventListener("click", () => limpiarInventarioSesion());
+    }
     $("sku-modal-close").addEventListener("click", () => $("sku-modal").classList.add("hidden"));
     $("complete-alert-close").addEventListener("click", () => mostrarCompleto(false));
     const btnWhatsappCierre = $("complete-alert-whatsapp");

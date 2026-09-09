@@ -197,19 +197,16 @@ def _liberar_memoria_ocr(*objetos: Any) -> None:
 
 
 def _abrir_hoja(data: bytes) -> Image.Image:
-    """Abre la foto, aplica EXIF y gira 90° horario si viene apaisada."""
+    """Abre la foto, aplica EXIF y gira 90° horario para leer de arriba a abajo."""
     image = Image.open(io.BytesIO(data))
     image = ImageOps.exif_transpose(image)
     if image.mode != "RGB":
         rgb = image.convert("RGB")
         image.close()
         image = rgb
-    ancho, alto = image.size
-    if ancho > alto:
-        rotada = image.rotate(-90, expand=True)
-        image.close()
-        image = rotada
-    return image
+    rotada = image.rotate(-90, expand=True)
+    image.close()
+    return rotada
 
 
 def preprocess_image(data: bytes) -> Image.Image:
@@ -508,48 +505,124 @@ def extraer_json_gemini(data: bytes) -> dict[str, Any] | None:
         preferido,
         "gemini-2.5-flash",
         "gemini-2.0-flash",
-        "gemini-1.5-flash",
-        "gemini-1.5-flash-latest",
+        "gemini-2.5-flash-lite",
+        "gemini-2.0-flash-lite",
+        "gemini-flash-latest",
+        "gemini-2.5-pro",
     ):
         if nombre and nombre not in modelos:
             modelos.append(nombre)
+    for extra in _listar_modelos_gemini(api_key):
+        if extra not in modelos:
+            modelos.append(extra)
+    parsed = extraer_json_gemini_sdk(data, api_key, modelos)
+    if parsed:
+        return parsed
     imagen_b64 = _imagen_a_jpeg_b64(data)
     ultimo_error = ""
     for modelo in modelos:
-        cuerpo = {
-            "contents": [
-                {
-                    "parts": [
-                        {"text": VISION_PROMPT},
-                        {"inline_data": {"mime_type": "image/jpeg", "data": imagen_b64}},
-                    ]
-                }
-            ],
-            "generationConfig": {"temperature": 0, "responseMimeType": "application/json"},
-        }
-        url = (
-            f"https://generativelanguage.googleapis.com/v1beta/models/{modelo}:generateContent"
-            f"?key={api_key}"
-        )
-        try:
-            payload = _post_json(url, cuerpo, {"Content-Type": "application/json"})
-            if payload.get("error"):
-                raise RuntimeError(payload["error"])
-            candidatos = payload.get("candidates") or []
-            if not candidatos:
-                raise RuntimeError(f"sin candidates: {json.dumps(payload)[:500]}")
-            crudo = candidatos[0]["content"]["parts"][0]["text"]
-            parsed = _parsear_json_modelo(crudo)
-            if parsed:
-                print(f"[AL OCR] Visión Gemini respondió ({modelo}).", flush=True)
-                return parsed
-            raise RuntimeError("respuesta sin JSON de SKUs")
-        except Exception as exc:
-            ultimo_error = f"Gemini ({modelo}) falló: {_detalle_error(exc)}"
-            print(f"[AL OCR] {ultimo_error}", flush=True)
-            continue
+        for version in ("v1", "v1beta"):
+            cuerpo = {
+                "contents": [
+                    {
+                        "parts": [
+                            {"text": VISION_PROMPT},
+                            {"inline_data": {"mime_type": "image/jpeg", "data": imagen_b64}},
+                        ]
+                    }
+                ],
+                "generationConfig": {"temperature": 0, "responseMimeType": "application/json"},
+            }
+            url = (
+                f"https://generativelanguage.googleapis.com/{version}/models/{modelo}:generateContent"
+                f"?key={api_key}"
+            )
+            try:
+                payload = _post_json(url, cuerpo, {"Content-Type": "application/json"})
+                if payload.get("error"):
+                    raise RuntimeError(payload["error"])
+                candidatos = payload.get("candidates") or []
+                if not candidatos:
+                    raise RuntimeError(f"sin candidates: {json.dumps(payload)[:500]}")
+                crudo = candidatos[0]["content"]["parts"][0]["text"]
+                parsed = _parsear_json_modelo(crudo)
+                if parsed:
+                    print(f"[AL OCR] Visión Gemini respondió ({version}/{modelo}).", flush=True)
+                    return parsed
+                raise RuntimeError("respuesta sin JSON de SKUs")
+            except Exception as exc:
+                ultimo_error = f"Gemini ({version}/{modelo}) falló: {_detalle_error(exc)}"
+                print(f"[AL OCR] {ultimo_error}", flush=True)
+                continue
     if ultimo_error:
         _ERRORES_VISION.append(ultimo_error)
+    return None
+
+
+def _listar_modelos_gemini(api_key: str) -> list[str]:
+    nombres: list[str] = []
+    for version in ("v1", "v1beta"):
+        url = f"https://generativelanguage.googleapis.com/{version}/models?key={api_key}"
+        try:
+            payload = _post_json_get(url)
+            for modelo in payload.get("models") or []:
+                metodos = modelo.get("supportedGenerationMethods") or []
+                if "generateContent" not in metodos:
+                    continue
+                raw = str(modelo.get("name") or "")
+                corto = raw.split("/")[-1]
+                if "flash" in corto or "pro" in corto:
+                    nombres.append(corto)
+        except Exception as exc:
+            print(f"[AL OCR] ListModels {version} falló: {_detalle_error(exc)}", flush=True)
+    return nombres
+
+
+def _post_json_get(url: str) -> dict[str, Any]:
+    try:
+        import requests
+
+        resp = requests.get(url, timeout=30)
+        if resp.status_code >= 400:
+            raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:800]}")
+        return resp.json()
+    except ImportError:
+        req = urllib.request.Request(url, method="GET")
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+
+
+def extraer_json_gemini_sdk(data: bytes, api_key: str, modelos: list[str]) -> dict[str, Any] | None:
+    try:
+        import google.generativeai as genai
+    except Exception:
+        return None
+    imagen = None
+    try:
+        genai.configure(api_key=api_key)
+        imagen = _abrir_hoja(data)
+        for modelo in modelos:
+            try:
+                cliente = genai.GenerativeModel(modelo)
+                resp = cliente.generate_content(
+                    [VISION_PROMPT, imagen],
+                    generation_config={"temperature": 0, "response_mime_type": "application/json"},
+                )
+                parsed = _parsear_json_modelo(getattr(resp, "text", "") or "")
+                if parsed:
+                    print(f"[AL OCR] Visión Gemini SDK respondió ({modelo}).", flush=True)
+                    return parsed
+            except Exception as exc:
+                print(f"[AL OCR] Gemini SDK ({modelo}) falló: {_detalle_error(exc)}", flush=True)
+                continue
+    except Exception as exc:
+        print(f"[AL OCR] Gemini SDK no disponible: {_detalle_error(exc)}", flush=True)
+    finally:
+        if imagen is not None:
+            try:
+                imagen.close()
+            except Exception:
+                pass
     return None
 
 
@@ -650,6 +723,8 @@ def inventario_desde_vision(payload: dict[str, Any], formato: str | None = None)
             continue
         if _parece_encabezado_no_sku(sku):
             continue
+        if sku.replace("-", "").isalpha():
+            continue
         qty = _qty_esperado_fila(fila)
         desc = str(
             fila.get("descripcion")
@@ -704,6 +779,13 @@ def procesar_documento(data: bytes, formato: str | None = None) -> dict[str, Any
             "fecha_carga": _ahora(),
             "skus": [],
         }
+        inventario["skus"] = [
+            item
+            for item in (inventario.get("skus") or [])
+            if item.get("sku")
+            and not str(item.get("sku", "")).replace("-", "").isalpha()
+            and not _parece_encabezado_no_sku(str(item.get("sku")))
+        ]
         if inventario.get("skus"):
             return inventario
 
@@ -821,7 +903,7 @@ def _es_ruido_sku(token: str) -> bool:
     limpio = _sanear_sku(token).replace("-", "")
     if limpio in ruido:
         return True
-    if limpio.isalpha() and len(limpio) < 5:
+    if limpio.isalpha():
         return True
     if len(limpio) < 5:
         return True
@@ -899,24 +981,52 @@ def parsear_formato_a(texto: str) -> dict[str, Any]:
 
 
 def parsear_formato_b(texto: str) -> dict[str, Any]:
-    """Inbound Receiving Report: Trailer, SKU, Exp Eaches / Total Cases."""
+    """Inbound Receiving Report: Trailer, columna SKU, Exp Eaches."""
     contenedor = _buscar_contenedor(texto, [r"TRAILER", r"CONTAINER", r"CONTENEDOR"])
+    asn = ""
+    match_asn = re.search(r"\bASN[:\s]+(\d{5,12})", texto, re.I)
+    if match_asn:
+        asn = match_asn.group(1)
+    esperado = None
+    match_exp = re.search(r"exp\s*eaches[:\s]*(\d{1,6})", texto, re.I)
+    if match_exp:
+        esperado = int(match_exp.group(1))
+    if esperado is None:
+        match_cases = re.search(r"total\s*cases[:\s]*(\d{1,6})", texto, re.I)
+        if match_cases:
+            esperado = int(match_cases.group(1))
+
     zona = _zona_tabla(texto)
     skus: list[dict[str, Any]] = []
     vistos: set[str] = set()
+    desc = ""
+    match_desc = re.search(r"\b(HUSKY[\w\s\-]{4,40})", texto, re.I)
+    if match_desc:
+        desc = re.sub(r"\s+", " ", match_desc.group(1)).strip()
 
-    for linea in _limpiar_lineas(zona):
-        fila = _parsear_fila_producto(linea)
-        if not fila:
+    candidatos = re.findall(r"\b(\d{9,12})\b", zona or texto)
+    for codigo in candidatos:
+        if codigo == asn:
             continue
-        sku, descripcion, qty = fila
-        if sku in vistos:
+        sku = _sanear_sku(codigo)
+        if _es_ruido_sku(sku) or sku in vistos:
             continue
+        qty = esperado if esperado is not None else (_qty_de_linea(zona or texto) or 0)
         vistos.add(sku)
-        skus.append(_sku_item(sku, qty, descripcion))
+        skus.append(_sku_item(sku, qty, desc or sku))
 
     if not skus:
-        skus = _fallback_pares(zona or texto)
+        for linea in _limpiar_lineas(zona):
+            if re.search(r"\b(ASN|TRAILER|VENDOR|BOL|FULL PALLETS|DOCK DOOR)\b", linea, re.I):
+                continue
+            fila = _parsear_fila_producto(linea)
+            if not fila:
+                continue
+            sku, descripcion, qty = fila
+            if sku == asn or sku in vistos:
+                continue
+            vistos.add(sku)
+            skus.append(_sku_item(sku, esperado if esperado is not None else qty, descripcion or desc))
 
     return {
         "contenedor": contenedor,

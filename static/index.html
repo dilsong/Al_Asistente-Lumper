@@ -22,7 +22,7 @@
         },
       };
     </script>
-    <link rel="stylesheet" href="/static/styles.css?v=2.6" />
+    <link rel="stylesheet" href="/static/styles.css?v=2.7" />
     <style>
       .count-field {
         justify-content: flex-end !important;
@@ -240,9 +240,12 @@
     </section>
 
     <section class="panel" id="inventario-panel">
-      <div class="panel-head">
+      <div class="panel-head inventario-head">
         <h2>Inventario de sesión</h2>
-        <input id="tabla-filtro" class="filter-input" type="search" placeholder="Filtrar SKU…" />
+        <div class="inventario-head-actions">
+          <input id="tabla-filtro" class="filter-input" type="search" placeholder="Filtrar SKU…" />
+          <button type="button" id="btn-limpiar-inventario" class="btn-ghost">🧹 Limpiar inventario</button>
+        </div>
       </div>
       <div class="table-wrap">
         <table>
@@ -300,6 +303,6 @@
     </div>
 
     <script src="/static/config.js"></script>
-    <script src="/static/app.js?v=2.6"></script>
+    <script src="/static/app.js?v=2.7"></script>
   </body>
 </html>

@@ -2086,6 +2086,7 @@
     const compacta = await comprimirImagenCliente(file);
     const form = new FormData();
     form.append("archivo", compacta, compacta.name || "hoja.jpg");
+    form.append("file", compacta, compacta.name || "hoja.jpg");
     const response = await fetch("/api/ocr/upload", { method: "POST", body: form });
     const data = await response.json().catch(() => ({}));
     if (response.status === 403 && data.bloqueado) {

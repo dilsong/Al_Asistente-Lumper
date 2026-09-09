@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import gc
 from typing import Any, Literal
 
@@ -10,8 +11,17 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from services.ocr_engine import (
+    cargar_dotenv,
+    inventario_demo,
+    mensaje_carga,
+    procesar_documento,
+    ultimo_error_vision,
+)
+
+cargar_dotenv()
+
 from services import chat_service, inventory_service, license_manager
-from services.ocr_engine import inventario_demo, mensaje_carga, procesar_documento
 from services.paths import CSV_EXPORT_PATH, STATIC_DIR, ensure_data_dir
 from services.persistence import CsvFileStore, get_store
 
@@ -50,6 +60,21 @@ class ChatBody(BaseModel):
 
 class ChatSyncBody(BaseModel):
     mensajes: list[dict[str, Any]]
+
+
+class ImagenBase64Body(BaseModel):
+    image_base64: str = Field(..., min_length=32)
+    formato: str | None = None
+
+
+def _bytes_desde_base64(crudo: str) -> bytes:
+    texto = (crudo or "").strip()
+    if "," in texto and texto.lower().startswith("data:"):
+        texto = texto.split(",", 1)[1]
+    try:
+        return base64.b64decode(texto)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="image_base64 no es válido") from exc
 
 
 @app.middleware("http")
@@ -135,11 +160,18 @@ def post_paleta(body: PaletaBody) -> dict[str, Any]:
 
 @app.post("/api/ocr/upload")
 async def upload_documento(
-    archivo: UploadFile = File(...),
+    archivo: UploadFile | None = File(default=None),
+    file: UploadFile | None = File(default=None),
     formato: str | None = Form(default=None),
 ) -> dict[str, Any]:
-    nombre = (archivo.filename or "").lower()
-    contenido = await archivo.read()
+    upload = archivo or file
+    if upload is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Falta el archivo. Envíe el campo multipart 'archivo' (o 'file').",
+        )
+    nombre = (upload.filename or "").lower()
+    contenido = await upload.read()
     try:
         if not contenido:
             raise HTTPException(status_code=400, detail="Archivo vacío")
@@ -153,10 +185,11 @@ async def upload_documento(
             inventario = procesar_documento(contenido, formato=formato)
 
         if not inventario.get("skus"):
-            raise HTTPException(
-                status_code=422,
-                detail="El documento no devolvió SKUs. Pruebe otro recorte o el modo demo.",
-            )
+            extra = ultimo_error_vision()
+            detalle = "El documento no devolvió SKUs. Pruebe otro recorte o el modo demo."
+            if extra:
+                detalle = f"{detalle} Visión: {extra}"
+            raise HTTPException(status_code=422, detail=detalle)
 
         inventory_service.guardar_inventario(inventario)
         voz = mensaje_carga(inventario)
@@ -169,9 +202,33 @@ async def upload_documento(
     finally:
         contenido = None
         try:
-            await archivo.close()
+            await upload.close()
         except Exception:
             pass
+        gc.collect()
+
+
+@app.post("/api/ocr/upload-base64")
+def upload_documento_base64(body: ImagenBase64Body) -> dict[str, Any]:
+    contenido = _bytes_desde_base64(body.image_base64)
+    try:
+        inventario = procesar_documento(contenido, formato=body.formato)
+        if not inventario.get("skus"):
+            extra = ultimo_error_vision()
+            detalle = "El documento no devolvió SKUs. Pruebe otro recorte o el modo demo."
+            if extra:
+                detalle = f"{detalle} Visión: {extra}"
+            raise HTTPException(status_code=422, detail=detalle)
+        inventory_service.guardar_inventario(inventario)
+        voz = mensaje_carga(inventario)
+        return {
+            "ok": True,
+            "mensaje": voz,
+            "inventario": inventario,
+            "kpis": inventory_service.kpis(inventario),
+        }
+    finally:
+        contenido = None
         gc.collect()
 
 

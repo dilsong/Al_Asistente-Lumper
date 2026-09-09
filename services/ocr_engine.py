@@ -20,6 +20,43 @@ from typing import Any
 from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 
 logger = logging.getLogger(__name__)
+_ERRORES_VISION: list[str] = []
+
+
+def cargar_dotenv() -> None:
+    """Carga .env local sin pisar variables ya definidas (Render, sistema)."""
+    try:
+        from dotenv import load_dotenv
+
+        load_dotenv(override=False)
+    except Exception:
+        pass
+    raiz = Path(__file__).resolve().parent.parent
+    for candidato in (Path.cwd() / ".env", raiz / ".env"):
+        if not candidato.is_file():
+            continue
+        try:
+            for linea in candidato.read_text(encoding="utf-8").splitlines():
+                texto = linea.strip()
+                if not texto or texto.startswith("#") or "=" not in texto:
+                    continue
+                clave, _, valor = texto.partition("=")
+                clave = clave.strip()
+                valor = valor.strip().strip("'").strip('"')
+                if clave and clave not in os.environ:
+                    os.environ[clave] = valor
+        except Exception as exc:
+            print(f"[AL OCR] No se pudo leer {candidato}: {exc}", flush=True)
+
+
+def _enmascarar_clave(valor: str) -> str:
+    limpio = (valor or "").strip()
+    if len(limpio) < 8:
+        return "(corta)"
+    return f"{limpio[:4]}…{limpio[-4:]}"
+
+
+cargar_dotenv()
 
 try:
     import pytesseract
@@ -159,14 +196,25 @@ def _liberar_memoria_ocr(*objetos: Any) -> None:
     gc.collect()
 
 
-def preprocess_image(data: bytes) -> Image.Image:
-    """Deskew, grises, contraste y umbral adaptativo para fotos de PO."""
+def _abrir_hoja(data: bytes) -> Image.Image:
+    """Abre la foto, aplica EXIF y gira hojas landscape capturadas en vertical."""
     image = Image.open(io.BytesIO(data))
     image = ImageOps.exif_transpose(image)
     if image.mode != "RGB":
         rgb = image.convert("RGB")
         image.close()
         image = rgb
+    ancho, alto = image.size
+    if alto > ancho * 1.08:
+        rotada = image.rotate(90, expand=True)
+        image.close()
+        image = rotada
+    return image
+
+
+def preprocess_image(data: bytes) -> Image.Image:
+    """Deskew, grises, contraste y umbral adaptativo para fotos de PO."""
+    image = _abrir_hoja(data)
     gray = ImageOps.grayscale(image)
     image.close()
     gray = ImageOps.autocontrast(gray, cutoff=1)
@@ -251,11 +299,8 @@ def extraer_texto(data: bytes) -> str:
 
 
 def _imagen_a_jpeg_b64(data: bytes) -> str:
-    image = Image.open(io.BytesIO(data))
+    image = _abrir_hoja(data)
     try:
-        image = ImageOps.exif_transpose(image)
-        if image.mode != "RGB":
-            image = image.convert("RGB")
         w, h = image.size
         max_lado = 1280
         scale = min(1.0, max_lado / max(w, h, 1))
@@ -301,12 +346,13 @@ def extraer_texto_easyocr(imagen: Image.Image) -> str:
 
 VISION_PROMPT = (
     "You extract the product table from a warehouse Purchase Order Report or Inbound Receiving Report photo. "
+    "The photo may be rotated; read the page regardless of orientation. "
     "Return ONLY valid JSON with this exact shape: "
     '{"contenedor":"","skus":[{"sku":"","descripcion":"","cajas_esperadas":0}]}. '
-    "sku is the Product / SKU code (example P0845170-1). "
-    "descripcion is the Description column. "
+    "sku is the Product / SKU code (example 1015223027 or P0845170-1). "
+    "descripcion is the SKU Description / Description column. "
     "cajas_esperadas is the QTY / Total Cases / Exp Eaches integer (boxes expected). "
-    "contenedor is Other Reference Number or Trailer if visible. "
+    "contenedor is Trailer or Other Reference Number if visible. "
     "Read every data row of the table. Ignore barcodes, headers, handwritten notes and footer totals."
 )
 
@@ -327,24 +373,81 @@ def _parsear_json_modelo(crudo: str) -> dict[str, Any] | None:
     return data if isinstance(data, dict) else None
 
 
-def _clave_vision(*alternativas: str) -> str:
-    """Lee la clave de visión desde API_KEY o, si no hay, desde Gemini/OpenAI."""
-    valor = os.environ.get("API_KEY", "").strip()
-    if valor:
-        return valor
-    for nombre in alternativas:
-        valor = os.environ.get(nombre, "").strip()
-        if valor:
-            return valor
-    return ""
+def _clave_gemini() -> str:
+    gem = os.environ.get("GEMINI_API_KEY", "").strip()
+    if gem:
+        return gem
+    api = os.environ.get("API_KEY", "").strip()
+    if api.startswith("sk-"):
+        return ""
+    return api
+
+
+def _clave_openai() -> str:
+    oai = os.environ.get("OPENAI_API_KEY", "").strip()
+    if oai:
+        return oai
+    api = os.environ.get("API_KEY", "").strip()
+    return api if api.startswith("sk-") else ""
+
+
+def _hay_clave_vision() -> bool:
+    return bool(_clave_gemini() or _clave_openai())
+
+
+def _registrar_error_vision(msg: str) -> None:
+    texto = (msg or "").strip()
+    if texto:
+        _ERRORES_VISION.append(texto)
+        print(f"[AL OCR] {texto}", flush=True)
+
+
+def _detalle_error(exc: Exception) -> str:
+    partes = [f"{type(exc).__name__}: {exc}"]
+    resp = getattr(exc, "response", None)
+    if resp is not None:
+        try:
+            partes.append(f"HTTP {resp.status_code} {str(resp.text)[:800]}")
+        except Exception:
+            pass
+    if isinstance(exc, urllib.error.HTTPError):
+        try:
+            partes.append(exc.read().decode("utf-8", errors="replace")[:800])
+        except Exception:
+            pass
+    return " | ".join(partes)
+
+
+def _post_json(url: str, cuerpo: dict[str, Any], headers: dict[str, str], timeout: int = 60) -> dict[str, Any]:
+    try:
+        import requests
+
+        resp = requests.post(url, json=cuerpo, headers=headers, timeout=timeout)
+        if resp.status_code >= 400:
+            raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:800]}")
+        return resp.json()
+    except ImportError:
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(cuerpo).encode("utf-8"),
+            headers=headers,
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            cuerpo_err = exc.read().decode("utf-8", errors="replace")[:800]
+            raise RuntimeError(f"HTTP {exc.code} {exc.reason}: {cuerpo_err}") from exc
 
 
 def extraer_json_openai(data: bytes) -> dict[str, Any] | None:
-    api_key = _clave_vision("OPENAI_API_KEY")
+    api_key = _clave_openai()
     if not api_key:
         return None
+    modelo = os.environ.get("OPENAI_VISION_MODEL", "gpt-4o-mini")
     cuerpo = {
-        "model": os.environ.get("OPENAI_VISION_MODEL", "gpt-4o-mini"),
+        "model": modelo,
         "temperature": 0,
         "response_format": {"type": "json_object"},
         "messages": [
@@ -360,63 +463,93 @@ def extraer_json_openai(data: bytes) -> dict[str, Any] | None:
             }
         ],
     }
-    req = urllib.request.Request(
-        "https://api.openai.com/v1/chat/completions",
-        data=json.dumps(cuerpo).encode("utf-8"),
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}",
-        },
-        method="POST",
-    )
     try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            payload = json.loads(resp.read().decode("utf-8"))
+        payload = _post_json(
+            "https://api.openai.com/v1/chat/completions",
+            cuerpo,
+            {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {api_key}",
+            },
+        )
         crudo = payload["choices"][0]["message"]["content"]
         print("[AL OCR] Visión OpenAI respondió.", flush=True)
         return _parsear_json_modelo(crudo)
     except Exception as exc:
-        logger.error("OpenAI Vision falló: %s", exc)
-        print(f"[AL OCR] OpenAI Vision falló: {exc}", flush=True)
+        _registrar_error_vision(f"OpenAI Vision falló: {_detalle_error(exc)}")
         return None
 
 
 def extraer_json_gemini(data: bytes) -> dict[str, Any] | None:
-    api_key = _clave_vision("GEMINI_API_KEY")
+    api_key = _clave_gemini()
     if not api_key:
         return None
-    modelo = os.environ.get("GEMINI_VISION_MODEL", "gemini-2.0-flash")
-    cuerpo = {
-        "contents": [
-            {
-                "parts": [
-                    {"text": VISION_PROMPT},
-                    {"inline_data": {"mime_type": "image/jpeg", "data": _imagen_a_jpeg_b64(data)}},
-                ]
-            }
-        ],
-        "generationConfig": {"temperature": 0, "responseMimeType": "application/json"},
-    }
-    url = (
-        f"https://generativelanguage.googleapis.com/v1beta/models/{modelo}:generateContent"
-        f"?key={api_key}"
-    )
-    req = urllib.request.Request(
-        url,
-        data=json.dumps(cuerpo).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            payload = json.loads(resp.read().decode("utf-8"))
-        crudo = payload["candidates"][0]["content"]["parts"][0]["text"]
-        print("[AL OCR] Visión Gemini respondió.", flush=True)
-        return _parsear_json_modelo(crudo)
-    except Exception as exc:
-        logger.error("Gemini Vision falló: %s", exc)
-        print(f"[AL OCR] Gemini Vision falló: {exc}", flush=True)
-        return None
+    preferido = os.environ.get("GEMINI_VISION_MODEL", "").strip()
+    modelos: list[str] = []
+    for nombre in (
+        preferido,
+        "gemini-2.5-flash",
+        "gemini-2.0-flash",
+        "gemini-1.5-flash",
+        "gemini-1.5-flash-latest",
+    ):
+        if nombre and nombre not in modelos:
+            modelos.append(nombre)
+    imagen_b64 = _imagen_a_jpeg_b64(data)
+    ultimo_error = ""
+    for modelo in modelos:
+        cuerpo = {
+            "contents": [
+                {
+                    "parts": [
+                        {"text": VISION_PROMPT},
+                        {"inline_data": {"mime_type": "image/jpeg", "data": imagen_b64}},
+                    ]
+                }
+            ],
+            "generationConfig": {"temperature": 0, "responseMimeType": "application/json"},
+        }
+        url = (
+            f"https://generativelanguage.googleapis.com/v1beta/models/{modelo}:generateContent"
+            f"?key={api_key}"
+        )
+        try:
+            payload = _post_json(url, cuerpo, {"Content-Type": "application/json"})
+            if payload.get("error"):
+                raise RuntimeError(payload["error"])
+            candidatos = payload.get("candidates") or []
+            if not candidatos:
+                raise RuntimeError(f"sin candidates: {json.dumps(payload)[:500]}")
+            crudo = candidatos[0]["content"]["parts"][0]["text"]
+            parsed = _parsear_json_modelo(crudo)
+            if parsed:
+                print(f"[AL OCR] Visión Gemini respondió ({modelo}).", flush=True)
+                return parsed
+            raise RuntimeError("respuesta sin JSON de SKUs")
+        except Exception as exc:
+            ultimo_error = f"Gemini ({modelo}) falló: {_detalle_error(exc)}"
+            print(f"[AL OCR] {ultimo_error}", flush=True)
+            continue
+    if ultimo_error:
+        _ERRORES_VISION.append(ultimo_error)
+    return None
+
+
+def _log_estado_claves() -> None:
+    gem = _clave_gemini()
+    oai = _clave_openai()
+    if gem:
+        print(f"[AL OCR] GEMINI_API_KEY configurada ({_enmascarar_clave(gem)})", flush=True)
+    if oai:
+        print(f"[AL OCR] OPENAI_API_KEY configurada ({_enmascarar_clave(oai)})", flush=True)
+    if not gem and not oai:
+        print(
+            "[AL OCR] Sin clave de visión. Defina GEMINI_API_KEY, OPENAI_API_KEY o API_KEY en .env",
+            flush=True,
+        )
+
+
+_log_estado_claves()
 
 
 def inventario_desde_vision(payload: dict[str, Any], formato: str | None = None) -> dict[str, Any]:
@@ -426,7 +559,7 @@ def inventario_desde_vision(payload: dict[str, Any], formato: str | None = None)
         if not isinstance(fila, dict):
             continue
         sku = _sanear_sku(str(fila.get("sku") or fila.get("SKU") or fila.get("Product") or ""))
-        if not sku or _es_ruido_sku(sku) or sku in vistos:
+        if not sku or len(sku) < 4 or sku in vistos:
             continue
         qty_raw = (
             fila.get("cajas_esperadas")
@@ -453,19 +586,30 @@ def inventario_desde_vision(payload: dict[str, Any], formato: str | None = None)
 
 
 def procesar_documento(data: bytes, formato: str | None = None) -> dict[str, Any]:
-    """Visión (Gemini / OpenAI) lee la hoja; Tesseract/EasyOCR solo si no hay API o falla."""
+    """Visión (Gemini / OpenAI) lee la hoja; Tesseract solo si no hay API o falla."""
+    global _ERRORES_VISION
+    _ERRORES_VISION = []
     imagen = None
     tabla = None
     try:
-        print("[AL OCR] Enviando hoja a visión (Gemini / OpenAI)…", flush=True)
-        vision = extraer_json_gemini(data) or extraer_json_openai(data)
+        if not _hay_clave_vision():
+            print(
+                "[AL OCR] Visión no disponible: falta GEMINI_API_KEY / OPENAI_API_KEY / API_KEY.",
+                flush=True,
+            )
+        else:
+            print("[AL OCR] Enviando hoja a visión (Gemini / OpenAI)…", flush=True)
+        vision = extraer_json_gemini(data) or extraer_json_openai(data) if _hay_clave_vision() else None
         if vision:
             invent_v = inventario_desde_vision(vision, formato=formato)
             if invent_v.get("skus"):
                 return invent_v
             print("[AL OCR] Visión respondió sin SKUs útiles.", flush=True)
+        elif _hay_clave_vision():
+            detalle = " | ".join(_ERRORES_VISION[-3:]) or "sin detalle"
+            print(f"[AL OCR] Visión falló. Respaldo local ligero (Tesseract). Detalle: {detalle}", flush=True)
         else:
-            print("[AL OCR] Visión no disponible o falló. Respaldo local…", flush=True)
+            print("[AL OCR] Respaldo local ligero (Tesseract). EasyOCR no se cargará.", flush=True)
 
         texto = extraer_texto(data)
         inventario = parsear_texto(texto, formato=formato) if texto.strip() else {
@@ -475,6 +619,18 @@ def procesar_documento(data: bytes, formato: str | None = None) -> dict[str, Any
             "skus": [],
         }
         if inventario.get("skus"):
+            return inventario
+
+        easy_forzado = os.environ.get("AL_EASYOCR", "").strip().lower() in {"1", "true", "yes"}
+        if _hay_clave_vision() and not easy_forzado:
+            print(
+                "[AL OCR] EasyOCR omitido: hay clave de visión. No se carga el modelo pesado.",
+                flush=True,
+            )
+            return inventario
+
+        if not easy_forzado:
+            print("[AL OCR] EasyOCR omitido (defina AL_EASYOCR=1 para activarlo).", flush=True)
             return inventario
 
         print("[AL OCR] Tesseract no halló SKUs. Probando EasyOCR…", flush=True)
@@ -490,6 +646,10 @@ def procesar_documento(data: bytes, formato: str | None = None) -> dict[str, Any
     finally:
         _liberar_memoria_ocr(tabla, imagen)
         data = b""
+
+
+def ultimo_error_vision() -> str:
+    return " | ".join(_ERRORES_VISION[-3:])
 
 
 def detectar_formato(texto: str) -> str:

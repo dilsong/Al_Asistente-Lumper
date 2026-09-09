@@ -1,12 +1,12 @@
 {
-  "contenedor": "KKFU7868019SKUS",
+  "contenedor": "",
   "formato": "B",
-  "fecha_carga": "2026-09-09T15:11:10",
+  "fecha_carga": "2026-09-09T15:36:23",
   "skus": [
     {
-      "sku": "14881711",
-      "producto": "ASN; Trailer: KKFU7868019 Skus: Full Pallets:",
-      "cantidad_esperada": 27,
+      "sku": "1015223027",
+      "producto": "HUSKY 52-13 MATTE BLK COMBO",
+      "cantidad_esperada": 54,
       "contador": 0,
       "estado": "pendiente",
       "discrepancia": 0,

@@ -499,97 +499,48 @@ def extraer_json_gemini(data: bytes) -> dict[str, Any] | None:
     api_key = _clave_gemini()
     if not api_key:
         return None
-    preferido = os.environ.get("GEMINI_VISION_MODEL", "").strip()
-    modelos: list[str] = []
-    for nombre in (
-        preferido,
-        "gemini-2.5-flash",
-        "gemini-2.0-flash",
-        "gemini-2.5-flash-lite",
-        "gemini-2.0-flash-lite",
-        "gemini-flash-latest",
-        "gemini-2.5-pro",
-    ):
-        if nombre and nombre not in modelos:
-            modelos.append(nombre)
-    for extra in _listar_modelos_gemini(api_key):
-        if extra not in modelos:
-            modelos.append(extra)
+    modelos = ["gemini-1.5-flash", "gemini-1.5-pro"]
     parsed = extraer_json_gemini_sdk(data, api_key, modelos)
     if parsed:
         return parsed
     imagen_b64 = _imagen_a_jpeg_b64(data)
     ultimo_error = ""
     for modelo in modelos:
-        for version in ("v1", "v1beta"):
-            cuerpo = {
-                "contents": [
-                    {
-                        "parts": [
-                            {"text": VISION_PROMPT},
-                            {"inline_data": {"mime_type": "image/jpeg", "data": imagen_b64}},
-                        ]
-                    }
-                ],
-                "generationConfig": {"temperature": 0, "responseMimeType": "application/json"},
-            }
-            url = (
-                f"https://generativelanguage.googleapis.com/{version}/models/{modelo}:generateContent"
-                f"?key={api_key}"
-            )
-            try:
-                payload = _post_json(url, cuerpo, {"Content-Type": "application/json"})
-                if payload.get("error"):
-                    raise RuntimeError(payload["error"])
-                candidatos = payload.get("candidates") or []
-                if not candidatos:
-                    raise RuntimeError(f"sin candidates: {json.dumps(payload)[:500]}")
-                crudo = candidatos[0]["content"]["parts"][0]["text"]
-                parsed = _parsear_json_modelo(crudo)
-                if parsed:
-                    print(f"[AL OCR] Visión Gemini respondió ({version}/{modelo}).", flush=True)
-                    return parsed
-                raise RuntimeError("respuesta sin JSON de SKUs")
-            except Exception as exc:
-                ultimo_error = f"Gemini ({version}/{modelo}) falló: {_detalle_error(exc)}"
-                print(f"[AL OCR] {ultimo_error}", flush=True)
-                continue
+        cuerpo = {
+            "contents": [
+                {
+                    "parts": [
+                        {"text": VISION_PROMPT},
+                        {"inline_data": {"mime_type": "image/jpeg", "data": imagen_b64}},
+                    ]
+                }
+            ],
+            "generationConfig": {"temperature": 0, "responseMimeType": "application/json"},
+        }
+        url = (
+            f"https://generativelanguage.googleapis.com/v1beta/models/{modelo}:generateContent"
+            f"?key={api_key}"
+        )
+        try:
+            payload = _post_json(url, cuerpo, {"Content-Type": "application/json"})
+            if payload.get("error"):
+                raise RuntimeError(payload["error"])
+            candidatos = payload.get("candidates") or []
+            if not candidatos:
+                raise RuntimeError(f"sin candidates: {json.dumps(payload)[:500]}")
+            crudo = candidatos[0]["content"]["parts"][0]["text"]
+            parsed = _parsear_json_modelo(crudo)
+            if parsed:
+                print(f"[AL OCR] Visión Gemini respondió ({modelo}).", flush=True)
+                return parsed
+            raise RuntimeError("respuesta sin JSON de SKUs")
+        except Exception as exc:
+            ultimo_error = f"Gemini ({modelo}) falló: {_detalle_error(exc)}"
+            print(f"[AL OCR] {ultimo_error}", flush=True)
+            continue
     if ultimo_error:
         _ERRORES_VISION.append(ultimo_error)
     return None
-
-
-def _listar_modelos_gemini(api_key: str) -> list[str]:
-    nombres: list[str] = []
-    for version in ("v1", "v1beta"):
-        url = f"https://generativelanguage.googleapis.com/{version}/models?key={api_key}"
-        try:
-            payload = _post_json_get(url)
-            for modelo in payload.get("models") or []:
-                metodos = modelo.get("supportedGenerationMethods") or []
-                if "generateContent" not in metodos:
-                    continue
-                raw = str(modelo.get("name") or "")
-                corto = raw.split("/")[-1]
-                if "flash" in corto or "pro" in corto:
-                    nombres.append(corto)
-        except Exception as exc:
-            print(f"[AL OCR] ListModels {version} falló: {_detalle_error(exc)}", flush=True)
-    return nombres
-
-
-def _post_json_get(url: str) -> dict[str, Any]:
-    try:
-        import requests
-
-        resp = requests.get(url, timeout=30)
-        if resp.status_code >= 400:
-            raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:800]}")
-        return resp.json()
-    except ImportError:
-        req = urllib.request.Request(url, method="GET")
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            return json.loads(resp.read().decode("utf-8"))
 
 
 def extraer_json_gemini_sdk(data: bytes, api_key: str, modelos: list[str]) -> dict[str, Any] | None:

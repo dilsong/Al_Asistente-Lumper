@@ -127,6 +127,7 @@
     historialFecha: "",
     modoSumarHoja: false,
     ultimoCierre: null,
+    vozDesbloqueada: false,
   };
 
   const $ = (id) => document.getElementById(id);
@@ -661,6 +662,7 @@
   }
 
   function prepararSiguienteHoja() {
+    desbloquearVozIos();
     state.modoSumarHoja = true;
     const hojas = hojasDelContenedor();
     const siguiente = (state.inventario.skus || []).length ? hojas + 1 : 1;
@@ -1446,6 +1448,32 @@
     reiniciarReconocimiento(180);
   }
 
+  function desbloquearVozIos() {
+    if (!window.speechSynthesis) return;
+    try {
+      window.speechSynthesis.getVoices();
+      window.speechSynthesis.resume();
+      const unlock = new SpeechSynthesisUtterance(" ");
+      unlock.lang = idiomaReconocimiento();
+      unlock.volume = 0.01;
+      unlock.rate = 8;
+      unlock.onend = () => {};
+      unlock.onerror = () => {};
+      window.speechSynthesis.speak(unlock);
+      window.speechSynthesis.resume();
+      state.vozDesbloqueada = true;
+    } catch {
+      /* iOS puede ignorar el primer intento; se reintenta en el siguiente toque */
+    }
+  }
+
+  function enlazarDesbloqueoVoz(el) {
+    if (!el) return;
+    const unlock = () => desbloquearVozIos();
+    el.addEventListener("pointerdown", unlock);
+    el.addEventListener("click", unlock);
+  }
+
   function hablar(texto) {
     if (!window.speechSynthesis) {
       reanudarTrasTTS();
@@ -1453,13 +1481,24 @@
     }
     state.speaking = true;
     pauseRecognition();
-    window.speechSynthesis.cancel();
+    try {
+      window.speechSynthesis.cancel();
+      window.speechSynthesis.resume();
+    } catch {
+      /* noop */
+    }
     const utter = new SpeechSynthesisUtterance(texto);
     utter.lang = idiomaReconocimiento();
     utter.rate = 1.02;
+    utter.volume = 1;
     utter.onend = reanudarTrasTTS;
     utter.onerror = reanudarTrasTTS;
     window.speechSynthesis.speak(utter);
+    try {
+      window.speechSynthesis.resume();
+    } catch {
+      /* noop */
+    }
   }
 
   async function responder(texto, meta = {}) {
@@ -1677,6 +1716,7 @@
   }
 
   async function reportarEstatus() {
+    desbloquearVozIos();
     const data = estatusLocal();
     aplicarSesion(data);
     pintarEstatusModal(data);
@@ -1938,20 +1978,114 @@
     startEngine();
   }
 
+  const MAX_LADO_IMAGEN = 1280;
+  const JPEG_CALIDAD = 0.7;
+
+  function canvasABlob(canvas, type, quality) {
+    return new Promise((resolve, reject) => {
+      if (canvas.toBlob) {
+        canvas.toBlob((blob) => {
+          if (blob) resolve(blob);
+          else reject(new Error("No se pudo comprimir la imagen."));
+        }, type, quality);
+        return;
+      }
+      try {
+        const dataUrl = canvas.toDataURL(type, quality);
+        const bin = atob((dataUrl.split(",")[1] || ""));
+        const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i += 1) bytes[i] = bin.charCodeAt(i);
+        resolve(new Blob([bytes], { type }));
+      } catch (err) {
+        reject(err);
+      }
+    });
+  }
+
+  function cargarImagenArchivo(file) {
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => {
+        URL.revokeObjectURL(url);
+        resolve(img);
+      };
+      img.onerror = () => {
+        URL.revokeObjectURL(url);
+        reject(new Error("No se pudo leer la imagen."));
+      };
+      img.src = url;
+    });
+  }
+
+  async function comprimirImagenCliente(file) {
+    const tipo = String(file && file.type ? file.type : "").toLowerCase();
+    if (!file || (tipo && !tipo.startsWith("image/"))) return file;
+    let fuente = null;
+    let canvas = null;
+    let ctx = null;
+    try {
+      if (typeof createImageBitmap === "function") {
+        try {
+          fuente = await createImageBitmap(file, { imageOrientation: "from-image" });
+        } catch {
+          fuente = await cargarImagenArchivo(file);
+        }
+      } else {
+        fuente = await cargarImagenArchivo(file);
+      }
+      const w = fuente.naturalWidth || fuente.width;
+      const h = fuente.naturalHeight || fuente.height;
+      if (!w || !h) return file;
+      const scale = Math.min(1, MAX_LADO_IMAGEN / Math.max(w, h));
+      const tw = Math.max(1, Math.round(w * scale));
+      const th = Math.max(1, Math.round(h * scale));
+      canvas = document.createElement("canvas");
+      canvas.width = tw;
+      canvas.height = th;
+      ctx = canvas.getContext("2d", { alpha: false });
+      if (!ctx) return file;
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, tw, th);
+      ctx.drawImage(fuente, 0, 0, tw, th);
+      const blob = await canvasABlob(canvas, "image/jpeg", JPEG_CALIDAD);
+      const base = String(file.name || "hoja").replace(/\.[^.]+$/, "") || "hoja";
+      return new File([blob], `${base}.jpg`, { type: "image/jpeg", lastModified: Date.now() });
+    } catch (error) {
+      console.log("[AL] Compresión de imagen omitida", error);
+      return file;
+    } finally {
+      if (ctx && canvas) ctx.clearRect(0, 0, canvas.width, canvas.height);
+      if (canvas) {
+        canvas.width = 0;
+        canvas.height = 0;
+      }
+      if (fuente) {
+        if (typeof fuente.close === "function") fuente.close();
+        fuente.onload = null;
+        fuente.onerror = null;
+        if (fuente.src) fuente.src = "";
+      }
+    }
+  }
+
   function enlazarCargaHoja(id) {
     const input = $(id);
     if (!input) return;
+    enlazarDesbloqueoVoz(input.closest("label") || input);
     input.addEventListener("change", (event) => {
       const file = event.target.files && event.target.files[0];
-      if (file) subirDocumento(file).catch((err) => responder(err.message));
       event.target.value = "";
+      if (file) subirDocumento(file).catch((err) => responder(err.message));
     });
   }
 
   async function subirDocumento(file) {
-    await pushChat("al", "Leyendo la hoja de papel…", { evento: "ocr_inicio" });
+    desbloquearVozIos();
+    await pushChat("al", "Comprimiendo y leyendo la hoja de papel…", { evento: "ocr_inicio" });
+    const compacta = await comprimirImagenCliente(file);
     const form = new FormData();
-    form.append("archivo", file);
+    form.append("archivo", compacta, compacta.name || "hoja.jpg");
     const response = await fetch("/api/ocr/upload", { method: "POST", body: form });
     const data = await response.json().catch(() => ({}));
     if (response.status === 403 && data.bloqueado) {
@@ -1977,6 +2111,9 @@
 
   function enlazarUi() {
     $("mic-fab").addEventListener("click", toggleMic);
+    enlazarDesbloqueoVoz($("mic-fab"));
+    enlazarDesbloqueoVoz($("btn-estatus"));
+    enlazarDesbloqueoVoz($("btn-sumar-hoja"));
     const btnDemo = $("btn-demo");
     if (btnDemo) {
       btnDemo.addEventListener("click", () => cargarDemo().catch((err) => responder(err.message)));
@@ -2001,7 +2138,10 @@
     }
     $("btn-sumar-cajas").addEventListener("click", () => conteoManual("sumar"));
     $("btn-fijar-cajas").addEventListener("click", () => conteoManual("editar"));
-    $("btn-estatus").addEventListener("click", () => reportarEstatus().catch((err) => responder(err.message)));
+    $("btn-estatus").addEventListener("click", () => {
+      desbloquearVozIos();
+      reportarEstatus().catch((err) => responder(err.message));
+    });
     const modalEstatus = document.getElementById("modal-estatus");
     if (modalEstatus) {
       modalEstatus.addEventListener("click", (event) => {

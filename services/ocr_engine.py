@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import gc
 import io
 import json
 import logging
@@ -148,12 +149,26 @@ def _deskew_cv(gray):
     )
 
 
+def _liberar_memoria_ocr(*objetos: Any) -> None:
+    for obj in objetos:
+        try:
+            if obj is not None and hasattr(obj, "close"):
+                obj.close()
+        except Exception:
+            pass
+    gc.collect()
+
+
 def preprocess_image(data: bytes) -> Image.Image:
     """Deskew, grises, contraste y umbral adaptativo para fotos de PO."""
     image = Image.open(io.BytesIO(data))
+    image = ImageOps.exif_transpose(image)
     if image.mode != "RGB":
-        image = image.convert("RGB")
+        rgb = image.convert("RGB")
+        image.close()
+        image = rgb
     gray = ImageOps.grayscale(image)
+    image.close()
     gray = ImageOps.autocontrast(gray, cutoff=1)
     gray = ImageEnhance.Contrast(gray).enhance(2.1)
 
@@ -225,11 +240,35 @@ def extraer_texto(data: bytes) -> str:
     if not tesseract_disponible():
         return ""
     imagen = preprocess_image(data)
-    texto_completo = _ocr_imagen(imagen)
-    tabla = recortar_columna_codigos_barra(recortar_roi_tabla(imagen))
-    texto_roi = _ocr_imagen(tabla)
-    partes = [bloque.strip() for bloque in (texto_completo, texto_roi) if bloque.strip()]
-    return "\n".join(partes)
+    try:
+        texto_completo = _ocr_imagen(imagen)
+        tabla = recortar_columna_codigos_barra(recortar_roi_tabla(imagen))
+        texto_roi = _ocr_imagen(tabla)
+        partes = [bloque.strip() for bloque in (texto_completo, texto_roi) if bloque.strip()]
+        return "\n".join(partes)
+    finally:
+        _liberar_memoria_ocr(imagen)
+
+
+def _imagen_a_jpeg_b64(data: bytes) -> str:
+    image = Image.open(io.BytesIO(data))
+    try:
+        image = ImageOps.exif_transpose(image)
+        if image.mode != "RGB":
+            image = image.convert("RGB")
+        w, h = image.size
+        max_lado = 1280
+        scale = min(1.0, max_lado / max(w, h, 1))
+        if scale < 1:
+            image = image.resize(
+                (max(1, int(w * scale)), max(1, int(h * scale))),
+                getattr(Image, "Resampling", Image).LANCZOS,
+            )
+        buf = io.BytesIO()
+        image.save(buf, format="JPEG", quality=70, optimize=True)
+        return base64.b64encode(buf.getvalue()).decode("ascii")
+    finally:
+        image.close()
 
 
 _easy_reader = None
@@ -270,15 +309,6 @@ VISION_PROMPT = (
     "contenedor is Other Reference Number or Trailer if visible. "
     "Read every data row of the table. Ignore barcodes, headers, handwritten notes and footer totals."
 )
-
-
-def _imagen_a_jpeg_b64(data: bytes) -> str:
-    image = Image.open(io.BytesIO(data))
-    if image.mode != "RGB":
-        image = image.convert("RGB")
-    buf = io.BytesIO()
-    image.save(buf, format="JPEG", quality=85)
-    return base64.b64encode(buf.getvalue()).decode("ascii")
 
 
 def _parsear_json_modelo(crudo: str) -> dict[str, Any] | None:
@@ -424,36 +454,42 @@ def inventario_desde_vision(payload: dict[str, Any], formato: str | None = None)
 
 def procesar_documento(data: bytes, formato: str | None = None) -> dict[str, Any]:
     """Visión (Gemini / OpenAI) lee la hoja; Tesseract/EasyOCR solo si no hay API o falla."""
-    print("[AL OCR] Enviando hoja a visión (Gemini / OpenAI)…", flush=True)
-    vision = extraer_json_gemini(data) or extraer_json_openai(data)
-    if vision:
-        invent_v = inventario_desde_vision(vision, formato=formato)
-        if invent_v.get("skus"):
-            return invent_v
-        print("[AL OCR] Visión respondió sin SKUs útiles.", flush=True)
-    else:
-        print("[AL OCR] Visión no disponible o falló. Respaldo local…", flush=True)
+    imagen = None
+    tabla = None
+    try:
+        print("[AL OCR] Enviando hoja a visión (Gemini / OpenAI)…", flush=True)
+        vision = extraer_json_gemini(data) or extraer_json_openai(data)
+        if vision:
+            invent_v = inventario_desde_vision(vision, formato=formato)
+            if invent_v.get("skus"):
+                return invent_v
+            print("[AL OCR] Visión respondió sin SKUs útiles.", flush=True)
+        else:
+            print("[AL OCR] Visión no disponible o falló. Respaldo local…", flush=True)
 
-    texto = extraer_texto(data)
-    inventario = parsear_texto(texto, formato=formato) if texto.strip() else {
-        "contenedor": "",
-        "formato": (formato or "A").upper(),
-        "fecha_carga": _ahora(),
-        "skus": [],
-    }
-    if inventario.get("skus"):
-        return inventario
-
-    print("[AL OCR] Tesseract no halló SKUs. Probando EasyOCR…", flush=True)
-    imagen = preprocess_image(data)
-    tabla = recortar_columna_codigos_barra(recortar_roi_tabla(imagen))
-    texto_easy = extraer_texto_easyocr(tabla) or extraer_texto_easyocr(imagen)
-    if texto_easy.strip():
-        inventario = parsear_texto(f"{texto}\n{texto_easy}", formato=formato)
+        texto = extraer_texto(data)
+        inventario = parsear_texto(texto, formato=formato) if texto.strip() else {
+            "contenedor": "",
+            "formato": (formato or "A").upper(),
+            "fecha_carga": _ahora(),
+            "skus": [],
+        }
         if inventario.get("skus"):
             return inventario
 
-    return inventario
+        print("[AL OCR] Tesseract no halló SKUs. Probando EasyOCR…", flush=True)
+        imagen = preprocess_image(data)
+        tabla = recortar_columna_codigos_barra(recortar_roi_tabla(imagen))
+        texto_easy = extraer_texto_easyocr(tabla) or extraer_texto_easyocr(imagen)
+        if texto_easy.strip():
+            inventario = parsear_texto(f"{texto}\n{texto_easy}", formato=formato)
+            if inventario.get("skus"):
+                return inventario
+
+        return inventario
+    finally:
+        _liberar_memoria_ocr(tabla, imagen)
+        data = b""
 
 
 def detectar_formato(texto: str) -> str:

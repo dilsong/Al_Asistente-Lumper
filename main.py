@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 from typing import Any, Literal
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
@@ -139,31 +140,39 @@ async def upload_documento(
 ) -> dict[str, Any]:
     nombre = (archivo.filename or "").lower()
     contenido = await archivo.read()
-    if not contenido:
-        raise HTTPException(status_code=400, detail="Archivo vacío")
+    try:
+        if not contenido:
+            raise HTTPException(status_code=400, detail="Archivo vacío")
 
-    if nombre.endswith(".csv"):
-        tmp = ensure_data_dir() / "_upload_tmp.csv"
-        tmp.write_bytes(contenido)
-        inventario = CsvFileStore.import_skus(tmp, formato="CSV")
-        tmp.unlink(missing_ok=True)
-    else:
-        inventario = procesar_documento(contenido, formato=formato)
+        if nombre.endswith(".csv"):
+            tmp = ensure_data_dir() / "_upload_tmp.csv"
+            tmp.write_bytes(contenido)
+            inventario = CsvFileStore.import_skus(tmp, formato="CSV")
+            tmp.unlink(missing_ok=True)
+        else:
+            inventario = procesar_documento(contenido, formato=formato)
 
-    if not inventario.get("skus"):
-        raise HTTPException(
-            status_code=422,
-            detail="El documento no devolvió SKUs. Pruebe otro recorte o el modo demo.",
-        )
+        if not inventario.get("skus"):
+            raise HTTPException(
+                status_code=422,
+                detail="El documento no devolvió SKUs. Pruebe otro recorte o el modo demo.",
+            )
 
-    inventory_service.guardar_inventario(inventario)
-    voz = mensaje_carga(inventario)
-    return {
-        "ok": True,
-        "mensaje": voz,
-        "inventario": inventario,
-        "kpis": inventory_service.kpis(inventario),
-    }
+        inventory_service.guardar_inventario(inventario)
+        voz = mensaje_carga(inventario)
+        return {
+            "ok": True,
+            "mensaje": voz,
+            "inventario": inventario,
+            "kpis": inventory_service.kpis(inventario),
+        }
+    finally:
+        contenido = None
+        try:
+            await archivo.close()
+        except Exception:
+            pass
+        gc.collect()
 
 
 @app.post("/api/ocr/demo")

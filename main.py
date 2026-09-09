@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 import base64
 import gc
 from typing import Any, Literal
@@ -11,17 +15,8 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from services.ocr_engine import (
-    cargar_dotenv,
-    inventario_demo,
-    mensaje_carga,
-    procesar_documento,
-    ultimo_error_vision,
-)
-
-cargar_dotenv()
-
 from services import chat_service, inventory_service, license_manager
+from services.ocr_engine import inventario_demo, mensaje_carga, procesar_documento, ultimo_error_vision
 from services.paths import CSV_EXPORT_PATH, STATIC_DIR, ensure_data_dir
 from services.persistence import CsvFileStore, get_store
 

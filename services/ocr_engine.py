@@ -374,13 +374,8 @@ def _parsear_json_modelo(crudo: str) -> dict[str, Any] | None:
 
 
 def _clave_gemini() -> str:
-    gem = os.environ.get("GEMINI_API_KEY", "").strip()
-    if gem:
-        return gem
-    api = os.environ.get("API_KEY", "").strip()
-    if api.startswith("sk-"):
-        return ""
-    return api
+    gemini_key = os.getenv("GEMINI_API_KEY") or os.getenv("API_KEY")
+    return (gemini_key or "").strip()
 
 
 def _clave_openai() -> str:

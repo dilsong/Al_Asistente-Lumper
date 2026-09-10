@@ -10,6 +10,7 @@ import logging
 import os
 import re
 import sys
+import time
 import urllib.error
 import urllib.request
 from datetime import datetime
@@ -502,18 +503,66 @@ def extraer_json_openai(data: bytes) -> dict[str, Any] | None:
 
 
 _MODELOS_GEMINI_CACHE: list[str] | None = None
+_REINTENTOS_OCUPADO = 3
+_ESPERA_OCUPADO_S = 2
 _MODELOS_FLASH_PRIORIDAD = (
     "gemini-flash-latest",
-    "gemini-3.8-flash",
-    "gemini-3.7-flash",
     "gemini-3.6-flash",
     "gemini-3.5-flash",
+    "gemini-3.8-flash",
+    "gemini-3.7-flash",
     "gemini-3.5-flash-lite",
+    "gemini-1.5-flash",
     "gemini-2.5-flash",
     "gemini-2.5-flash-lite",
     "gemini-2.0-flash",
-    "gemini-1.5-flash",
 )
+_MODELOS_PRO_RESPALDO = (
+    "gemini-1.5-pro",
+    "gemini-3.1-pro",
+    "gemini-3-pro",
+    "gemini-pro-latest",
+)
+
+
+def _es_error_ocupado(err: object) -> bool:
+    texto = str(err).lower()
+    return any(
+        marca in texto
+        for marca in (
+            "503",
+            "unavailable",
+            "high demand",
+            "overloaded",
+            "resource_exhausted",
+            "too many requests",
+        )
+    )
+
+
+def _es_error_ausente(err: object) -> bool:
+    texto = str(err).lower()
+    return "404" in texto or "not found" in texto or "no longer available" in texto
+
+
+def _con_reintentos_ocupado(fn, modelo: str):
+    """Ejecuta fn; si Gemini está ocupado (503) reintenta 3 veces con 2 s de espera."""
+    ultimo: Exception | None = None
+    for intento in range(1, _REINTENTOS_OCUPADO + 2):
+        try:
+            return fn(), None
+        except Exception as err:
+            ultimo = err
+            if _es_error_ocupado(err) and intento <= _REINTENTOS_OCUPADO:
+                print(
+                    f"[AL OCR] Gemini ocupado (503) en {modelo}, "
+                    f"reintento {intento}/{_REINTENTOS_OCUPADO}…",
+                    flush=True,
+                )
+                time.sleep(_ESPERA_OCUPADO_S)
+                continue
+            return None, err
+    return None, ultimo
 
 
 def _get_json(url: str, headers: dict[str, str] | None = None) -> dict[str, Any]:
@@ -580,13 +629,25 @@ def _modelos_gemini_a_usar(api_key: str) -> list[str]:
             ordenados.append(nombre)
     if any(n == "gemini-flash-latest" or n.startswith("gemini-3") for n in ordenados):
         ordenados = [n for n in ordenados if not n.startswith("gemini-2.")]
+    pro = [
+        m
+        for m in encontrados
+        if "pro" in m.lower()
+        and "flash" not in m.lower()
+        and not any(x in m.lower() for x in ("image", "tts", "live", "audio", "embed"))
+    ]
+    for nombre in _MODELOS_PRO_RESPALDO:
+        if nombre in pro and nombre not in ordenados:
+            ordenados.append(nombre)
     if not ordenados:
-        ordenados = [n for n in _MODELOS_FLASH_PRIORIDAD if n != "gemini-1.5-flash"]
+        ordenados = list(_MODELOS_FLASH_PRIORIDAD)
         if preferido and preferido not in ordenados:
             ordenados.insert(0, preferido)
         print("[AL OCR] ListModels vacío; se probarán modelos Flash actuales.", flush=True)
-    else:
-        print(f"[AL OCR] Modelos Gemini a usar: {', '.join(ordenados[:5])}", flush=True)
+    for nombre in ("gemini-1.5-flash", "gemini-1.5-pro"):
+        if nombre not in ordenados:
+            ordenados.append(nombre)
+    print(f"[AL OCR] Modelos Gemini a usar: {', '.join(ordenados[:6])}", flush=True)
     _MODELOS_GEMINI_CACHE = ordenados
     return ordenados
 
@@ -597,80 +658,104 @@ def extraer_json_gemini(data: bytes) -> dict[str, Any] | None:
         return None
     modelos = _modelos_gemini_a_usar(api_key)
     jpeg = _imagen_a_jpeg_bytes(data)
-    parsed = extraer_json_gemini_sdk(jpeg, api_key, modelos)
+    parsed, ocupados = extraer_json_gemini_sdk(jpeg, api_key, modelos)
     if parsed:
         return parsed
     imagen_b64 = base64.b64encode(jpeg).decode("ascii")
     ultimo_error = ""
     headers = {"Content-Type": "application/json", "x-goog-api-key": api_key}
-    for modelo in modelos[:3]:
-        cuerpo = {
-            "contents": [
-                {
-                    "parts": [
-                        {"text": VISION_PROMPT},
-                        {"inline_data": {"mime_type": "image/jpeg", "data": imagen_b64}},
-                    ]
-                }
-            ],
-            "generationConfig": {"temperature": 0, "responseMimeType": "application/json"},
-        }
+    cuerpo = {
+        "contents": [
+            {
+                "parts": [
+                    {"text": VISION_PROMPT},
+                    {"inline_data": {"mime_type": "image/jpeg", "data": imagen_b64}},
+                ]
+            }
+        ],
+        "generationConfig": {"temperature": 0, "responseMimeType": "application/json"},
+    }
+
+    def _llamar_rest(modelo: str, version: str) -> dict[str, Any]:
+        url = (
+            f"https://generativelanguage.googleapis.com/{version}/models/{modelo}:generateContent"
+            f"?key={api_key}"
+        )
+        payload = _post_json(url, cuerpo, headers)
+        if payload.get("error"):
+            raise RuntimeError(payload["error"])
+        candidatos = payload.get("candidates") or []
+        if not candidatos:
+            raise RuntimeError(f"sin candidates: {json.dumps(payload)[:500]}")
+        crudo = candidatos[0]["content"]["parts"][0]["text"]
+        parsed_rest = _parsear_json_modelo(crudo)
+        if not parsed_rest:
+            raise RuntimeError("respuesta sin JSON de SKUs")
+        return parsed_rest
+
+    for modelo in modelos[:4]:
+        if modelo in ocupados:
+            continue
         for version in ("v1beta", "v1"):
-            url = (
-                f"https://generativelanguage.googleapis.com/{version}/models/{modelo}:generateContent"
-                f"?key={api_key}"
+            resultado, err = _con_reintentos_ocupado(
+                lambda m=modelo, v=version: _llamar_rest(m, v),
+                modelo,
             )
-            try:
-                payload = _post_json(url, cuerpo, headers)
-                if payload.get("error"):
-                    raise RuntimeError(payload["error"])
-                candidatos = payload.get("candidates") or []
-                if not candidatos:
-                    raise RuntimeError(f"sin candidates: {json.dumps(payload)[:500]}")
-                crudo = candidatos[0]["content"]["parts"][0]["text"]
-                parsed = _parsear_json_modelo(crudo)
-                if parsed:
-                    print(f"[AL OCR] Visión Gemini respondió ({modelo}).", flush=True)
-                    return parsed
-                raise RuntimeError("respuesta sin JSON de SKUs")
-            except Exception as err:
-                ultimo_error = f"Gemini ({modelo}/{version}) falló: {_detalle_error(err)}"
-                print(f"[AL OCR] {ultimo_error}", flush=True)
-                if "404" not in str(err).lower() and "not found" not in str(err).lower():
-                    break
+            if resultado:
+                print(f"[AL OCR] Visión Gemini respondió ({modelo}).", flush=True)
+                return resultado
+            if err is None:
+                continue
+            ultimo_error = f"Gemini ({modelo}/{version}) falló: {_detalle_error(err)}"
+            print(f"[AL OCR] {ultimo_error}", flush=True)
+            if _es_error_ausente(err):
+                continue
+            break
     if ultimo_error:
         _registrar_error_vision(ultimo_error)
     return None
 
 
-def extraer_json_gemini_sdk(data: bytes, api_key: str, modelos: list[str]) -> dict[str, Any] | None:
+def extraer_json_gemini_sdk(
+    data: bytes, api_key: str, modelos: list[str]
+) -> tuple[dict[str, Any] | None, set[str]]:
+    ocupados: set[str] = set()
     try:
         from google import genai
         from google.genai import types
     except Exception:
-        return None
+        return None, ocupados
     try:
         cliente = genai.Client(api_key=api_key)
-        jpeg = data if data[:2] == b"\xff\xd8" else _imagen_a_jpeg_bytes(data)
+        jpeg = data if data[:2] == bytes((0xFF, 0xD8)) else _imagen_a_jpeg_bytes(data)
         parte = types.Part.from_bytes(data=jpeg, mime_type="image/jpeg")
         config = types.GenerateContentConfig(temperature=0, response_mime_type="application/json")
-        for modelo in modelos[:2]:
-            try:
-                resp = cliente.models.generate_content(
-                    model=modelo,
-                    contents=[VISION_PROMPT, parte],
-                    config=config,
-                )
-                parsed = _parsear_json_modelo(getattr(resp, "text", "") or "")
-                if parsed:
-                    print(f"[AL OCR] Visión Gemini respondió ({modelo}).", flush=True)
-                    return parsed
-            except Exception as exc:
-                print(f"[AL OCR] Gemini ({modelo}) falló: {_detalle_error(exc)}", flush=True)
+
+        def _llamar_sdk(modelo: str) -> dict[str, Any]:
+            resp = cliente.models.generate_content(
+                model=modelo,
+                contents=[VISION_PROMPT, parte],
+                config=config,
+            )
+            parsed_sdk = _parsear_json_modelo(getattr(resp, "text", "") or "")
+            if not parsed_sdk:
+                raise RuntimeError("respuesta sin JSON de SKUs")
+            return parsed_sdk
+
+        for modelo in modelos[:4]:
+            resultado, err = _con_reintentos_ocupado(lambda m=modelo: _llamar_sdk(m), modelo)
+            if resultado:
+                print(f"[AL OCR] Visión Gemini respondió ({modelo}).", flush=True)
+                return resultado, ocupados
+            if err is None:
                 continue
+            print(f"[AL OCR] Gemini ({modelo}) falló: {_detalle_error(err)}", flush=True)
+            if _es_error_ocupado(err):
+                ocupados.add(modelo)
+            continue
     except Exception as exc:
         print(f"[AL OCR] Cliente google.genai: {_detalle_error(exc)}", flush=True)
-    return None
+    return None, ocupados
 
 
 def _log_estado_claves() -> None:
@@ -874,6 +959,15 @@ def procesar_documento(data: bytes, formato: str | None = None) -> dict[str, Any
 
 def ultimo_error_vision() -> str:
     return " | ".join(_ERRORES_VISION[-3:])
+
+
+def mensaje_fallo_lectura() -> str:
+    """Texto amigable para el operador; no expone JSON de HTTP 503."""
+    base = "El documento no devolvió SKUs. Pruebe otro recorte o el modo demo."
+    extra = ultimo_error_vision()
+    if extra and not _es_error_ocupado(extra):
+        return f"{base} Visión: {extra}"
+    return base
 
 
 def detectar_formato(texto: str) -> str:

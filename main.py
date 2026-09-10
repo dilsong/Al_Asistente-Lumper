@@ -16,7 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from services import chat_service, inventory_service, license_manager
-from services.ocr_engine import inventario_demo, mensaje_carga, procesar_documento, ultimo_error_vision
+from services.ocr_engine import inventario_demo, mensaje_carga, mensaje_fallo_lectura, procesar_documento
 from services.paths import CSV_EXPORT_PATH, STATIC_DIR, ensure_data_dir
 from services.persistence import CsvFileStore, get_store
 
@@ -180,11 +180,7 @@ async def upload_documento(
             inventario = procesar_documento(contenido, formato=formato)
 
         if not inventario.get("skus"):
-            extra = ultimo_error_vision()
-            detalle = "El documento no devolvió SKUs. Pruebe otro recorte o el modo demo."
-            if extra:
-                detalle = f"{detalle} Visión: {extra}"
-            raise HTTPException(status_code=422, detail=detalle)
+            raise HTTPException(status_code=422, detail=mensaje_fallo_lectura())
 
         inventory_service.guardar_inventario(inventario)
         voz = mensaje_carga(inventario)
@@ -209,11 +205,7 @@ def upload_documento_base64(body: ImagenBase64Body) -> dict[str, Any]:
     try:
         inventario = procesar_documento(contenido, formato=body.formato)
         if not inventario.get("skus"):
-            extra = ultimo_error_vision()
-            detalle = "El documento no devolvió SKUs. Pruebe otro recorte o el modo demo."
-            if extra:
-                detalle = f"{detalle} Visión: {extra}"
-            raise HTTPException(status_code=422, detail=detalle)
+            raise HTTPException(status_code=422, detail=mensaje_fallo_lectura())
         inventory_service.guardar_inventario(inventario)
         voz = mensaje_carga(inventario)
         return {

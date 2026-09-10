@@ -1,3 +1,0 @@
-# Opcional: OCR local con redes neuronales (pesado: PyTorch).
-# python -m pip install -r requirements-ocr.txt
-easyocr>=1.7.2

@@ -1992,8 +1992,8 @@
     startEngine();
   }
 
-  const MAX_LADO_IMAGEN = 1024;
-  const JPEG_CALIDAD = 0.65;
+  const MAX_LADO_IMAGEN = 1600;
+  const JPEG_CALIDAD = 0.85;
 
   function canvasABlob(canvas, type, quality) {
     return new Promise((resolve, reject) => {
@@ -2054,13 +2054,18 @@
       const scale = Math.min(1, MAX_LADO_IMAGEN / Math.max(w, h));
       const tw = Math.max(1, Math.round(w * scale));
       const th = Math.max(1, Math.round(h * scale));
+      const portrait = th > tw;
       canvas = document.createElement("canvas");
-      canvas.width = tw;
-      canvas.height = th;
+      canvas.width = portrait ? th : tw;
+      canvas.height = portrait ? tw : th;
       ctx = canvas.getContext("2d", { alpha: false });
       if (!ctx) return file;
       ctx.fillStyle = "#ffffff";
-      ctx.fillRect(0, 0, tw, th);
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      if (portrait) {
+        ctx.translate(0, canvas.height);
+        ctx.rotate(-Math.PI / 2);
+      }
       ctx.drawImage(fuente, 0, 0, tw, th);
       const blob = await canvasABlob(canvas, "image/jpeg", JPEG_CALIDAD);
       const base = String(file.name || "hoja").replace(/\.[^.]+$/, "") || "hoja";

@@ -197,16 +197,19 @@ def _liberar_memoria_ocr(*objetos: Any) -> None:
 
 
 def _abrir_hoja(data: bytes) -> Image.Image:
-    """Abre la foto, aplica EXIF y gira 90° horario para leer de arriba a abajo."""
+    """Abre la foto, aplica EXIF y pone la hoja apaisada (Inbound es landscape)."""
     image = Image.open(io.BytesIO(data))
     image = ImageOps.exif_transpose(image)
     if image.mode != "RGB":
         rgb = image.convert("RGB")
         image.close()
         image = rgb
-    rotada = image.rotate(-90, expand=True)
-    image.close()
-    return rotada
+    ancho, alto = image.size
+    if alto > ancho:
+        rotada = image.rotate(90, expand=True)
+        image.close()
+        return rotada
+    return image
 
 
 def preprocess_image(data: bytes) -> Image.Image:
@@ -295,21 +298,12 @@ def extraer_texto(data: bytes) -> str:
         _liberar_memoria_ocr(imagen)
 
 
-def _es_jpeg_listo(data: bytes) -> bool:
-    """JPEG ya comprimido en el teléfono: no reabrir ni girar en Python."""
-    return len(data) <= 400_000 and data[:2] == b"\xff\xd8"
-
-
 def _imagen_a_jpeg_bytes(data: bytes) -> bytes:
-    if _es_jpeg_listo(data):
-        return data
-    image = Image.open(io.BytesIO(data))
+    """Orienta la hoja (retrato → apaisado) y deja JPEG listo para visión."""
+    image = _abrir_hoja(data)
     try:
-        image = ImageOps.exif_transpose(image)
-        if image.mode != "RGB":
-            image = image.convert("RGB")
         w, h = image.size
-        max_lado = 1024
+        max_lado = 1600
         scale = min(1.0, max_lado / max(w, h, 1))
         if scale < 1:
             image = image.resize(
@@ -317,7 +311,7 @@ def _imagen_a_jpeg_bytes(data: bytes) -> bytes:
                 getattr(Image, "Resampling", Image).LANCZOS,
             )
         buf = io.BytesIO()
-        image.save(buf, format="JPEG", quality=65, optimize=True)
+        image.save(buf, format="JPEG", quality=85, optimize=True)
         return buf.getvalue()
     finally:
         image.close()
@@ -356,21 +350,19 @@ def extraer_texto_easyocr(imagen: Image.Image) -> str:
 
 
 VISION_PROMPT = (
-    "You read a warehouse Inbound Receiving Report or Purchase Order Report photo. "
-    "If the page is landscape, treat it as rotated 90 degrees clockwise so you read top to bottom. "
-    "Return ONLY a JSON array of product rows. No markdown, no extra keys. "
-    "Format: "
-    '[{"sku":"1015223027","descripcion":"HUSKY 52-13 MATTE BLK COMBO","esperado":54}]. '
-    "STRICT RULES: "
-    "1) Ignore the HEADER block completely: ASN, Vendor/DC, Trailer, BOL, header SKUs count, "
-    "header Total Cases, Full Pallets, Partial Pallets, Dock Door. "
-    "ASN (example 14881711) is NEVER the product sku. Trailer (example KKFU7868019) is NEVER the sku. "
-    "2) sku MUST come from the DATA TABLE column headed SKU (the value under that header on each product row). "
-    "Example: 1015223027. "
-    "3) descripcion MUST come from the SKU Description column on that same row. "
-    "4) esperado MUST come from Exp Eaches on that product row (or Total Cases on the same row). "
-    "Never use Full Pallets. In the sample sheet esperado is 54, not 27. "
-    "One object per product data row."
+    "You read a warehouse Inbound Receiving Report (or Purchase Order Report). "
+    "The page is landscape: title at the top, table below. If text looks sideways, rotate it in your head first. "
+    "Return ONLY JSON, no markdown and no extra prose. "
+    'Exact shape: {"contenedor":"KKFU7868019","skus":[{"sku":"1015223027","descripcion":"HUSKY 52-13 MATTE BLK COMBO","esperado":54}]} '
+    "contenedor = Trailer value (example KKFU7868019), digits/letters only. "
+    "COLUMN MAPPING FOR INBOUND RECEIVING REPORT PRODUCT TABLE: "
+    'sku = exact digits under the table column headed "SKU" on each product row. Example: 1015223027. '
+    "Never use ASN, Trailer, Vendor/DC, BOL, Dock Door, PO, or header counts as sku. "
+    "ASN example 14881711 is NOT a sku. Trailer example KKFU7868019 is NOT a sku. "
+    'esperado = integer under "Exp Eaches" on that same product row. If missing, use "Total Cases" on that row. Example: 54. '
+    "Never use Full Pallets, Partial Pallets, Rec Eaches, or header totals. Sample sheet: esperado is 54, not Full Pallets 27. "
+    "descripcion = SKU Description on that same product row. "
+    "One object per product data row. JSON only."
 )
 
 
@@ -509,20 +501,109 @@ def extraer_json_openai(data: bytes) -> dict[str, Any] | None:
         return None
 
 
+_MODELOS_GEMINI_CACHE: list[str] | None = None
+_MODELOS_FLASH_PRIORIDAD = (
+    "gemini-flash-latest",
+    "gemini-3.8-flash",
+    "gemini-3.7-flash",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+    "gemini-2.0-flash",
+    "gemini-1.5-flash",
+)
+
+
+def _get_json(url: str, headers: dict[str, str] | None = None) -> dict[str, Any]:
+    try:
+        import requests
+
+        resp = requests.get(url, headers=headers or {}, timeout=20)
+        if resp.status_code >= 400:
+            raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:800]}")
+        return resp.json()
+    except ImportError:
+        req = urllib.request.Request(url, headers=headers or {}, method="GET")
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+
+
+def _listar_modelos_gemini(api_key: str) -> list[str]:
+    nombres: list[str] = []
+    for version in ("v1beta", "v1"):
+        url = f"https://generativelanguage.googleapis.com/{version}/models?key={api_key}"
+        try:
+            payload = _get_json(url, {"x-goog-api-key": api_key})
+            for modelo in payload.get("models") or []:
+                metodos = modelo.get("supportedGenerationMethods") or []
+                if metodos and "generateContent" not in metodos:
+                    continue
+                corto = str(modelo.get("name") or "").split("/")[-1]
+                if not corto or corto in nombres:
+                    continue
+                if any(x in corto.lower() for x in ("embed", "imagen", "tts", "audio", "robotics")):
+                    continue
+                nombres.append(corto)
+            if nombres:
+                break
+        except Exception as err:
+            print(f"[AL OCR] ListModels {version}: {_detalle_error(err)}", flush=True)
+            continue
+    return nombres
+
+
+def _modelos_gemini_a_usar(api_key: str) -> list[str]:
+    global _MODELOS_GEMINI_CACHE
+    preferido = os.getenv("GEMINI_VISION_MODEL", "").strip()
+    if _MODELOS_GEMINI_CACHE:
+        modelos = list(_MODELOS_GEMINI_CACHE)
+        if preferido and preferido not in modelos:
+            modelos.insert(0, preferido)
+        return modelos
+    encontrados = _listar_modelos_gemini(api_key)
+    flash = [
+        m
+        for m in encontrados
+        if "flash" in m.lower()
+        and not any(x in m.lower() for x in ("image", "tts", "live", "audio", "embed"))
+    ]
+    ordenados: list[str] = []
+    if preferido:
+        ordenados.append(preferido)
+    for nombre in _MODELOS_FLASH_PRIORIDAD:
+        if nombre in flash and nombre not in ordenados:
+            ordenados.append(nombre)
+    for nombre in flash:
+        if nombre not in ordenados:
+            ordenados.append(nombre)
+    if any(n == "gemini-flash-latest" or n.startswith("gemini-3") for n in ordenados):
+        ordenados = [n for n in ordenados if not n.startswith("gemini-2.")]
+    if not ordenados:
+        ordenados = [n for n in _MODELOS_FLASH_PRIORIDAD if n != "gemini-1.5-flash"]
+        if preferido and preferido not in ordenados:
+            ordenados.insert(0, preferido)
+        print("[AL OCR] ListModels vacío; se probarán modelos Flash actuales.", flush=True)
+    else:
+        print(f"[AL OCR] Modelos Gemini a usar: {', '.join(ordenados[:5])}", flush=True)
+    _MODELOS_GEMINI_CACHE = ordenados
+    return ordenados
+
+
 def extraer_json_gemini(data: bytes) -> dict[str, Any] | None:
     api_key = _clave_gemini()
     if not api_key:
         return None
-    preferido = os.getenv("GEMINI_VISION_MODEL", "").strip()
-    modelos = [preferido, "gemini-1.5-flash"] if preferido else ["gemini-1.5-flash"]
-    modelos = [m for i, m in enumerate(modelos) if m and m not in modelos[:i]]
-    parsed = extraer_json_gemini_sdk(data, api_key, modelos)
+    modelos = _modelos_gemini_a_usar(api_key)
+    jpeg = _imagen_a_jpeg_bytes(data)
+    parsed = extraer_json_gemini_sdk(jpeg, api_key, modelos)
     if parsed:
         return parsed
-    imagen_b64 = _imagen_a_jpeg_b64(data)
+    imagen_b64 = base64.b64encode(jpeg).decode("ascii")
     ultimo_error = ""
     headers = {"Content-Type": "application/json", "x-goog-api-key": api_key}
-    for modelo in modelos:
+    for modelo in modelos[:3]:
         cuerpo = {
             "contents": [
                 {
@@ -534,27 +615,29 @@ def extraer_json_gemini(data: bytes) -> dict[str, Any] | None:
             ],
             "generationConfig": {"temperature": 0, "responseMimeType": "application/json"},
         }
-        url = (
-            f"https://generativelanguage.googleapis.com/v1beta/models/{modelo}:generateContent"
-            f"?key={api_key}"
-        )
-        try:
-            payload = _post_json(url, cuerpo, headers)
-            if payload.get("error"):
-                raise RuntimeError(payload["error"])
-            candidatos = payload.get("candidates") or []
-            if not candidatos:
-                raise RuntimeError(f"sin candidates: {json.dumps(payload)[:500]}")
-            crudo = candidatos[0]["content"]["parts"][0]["text"]
-            parsed = _parsear_json_modelo(crudo)
-            if parsed:
-                print(f"[AL OCR] Visión Gemini respondió ({modelo}).", flush=True)
-                return parsed
-            raise RuntimeError("respuesta sin JSON de SKUs")
-        except Exception as exc:
-            ultimo_error = f"Gemini ({modelo}) falló: {_detalle_error(exc)}"
-            print(f"[AL OCR] {ultimo_error}", flush=True)
-            continue
+        for version in ("v1beta", "v1"):
+            url = (
+                f"https://generativelanguage.googleapis.com/{version}/models/{modelo}:generateContent"
+                f"?key={api_key}"
+            )
+            try:
+                payload = _post_json(url, cuerpo, headers)
+                if payload.get("error"):
+                    raise RuntimeError(payload["error"])
+                candidatos = payload.get("candidates") or []
+                if not candidatos:
+                    raise RuntimeError(f"sin candidates: {json.dumps(payload)[:500]}")
+                crudo = candidatos[0]["content"]["parts"][0]["text"]
+                parsed = _parsear_json_modelo(crudo)
+                if parsed:
+                    print(f"[AL OCR] Visión Gemini respondió ({modelo}).", flush=True)
+                    return parsed
+                raise RuntimeError("respuesta sin JSON de SKUs")
+            except Exception as err:
+                ultimo_error = f"Gemini ({modelo}/{version}) falló: {_detalle_error(err)}"
+                print(f"[AL OCR] {ultimo_error}", flush=True)
+                if "404" not in str(err).lower() and "not found" not in str(err).lower():
+                    break
     if ultimo_error:
         _registrar_error_vision(ultimo_error)
     return None
@@ -568,10 +651,10 @@ def extraer_json_gemini_sdk(data: bytes, api_key: str, modelos: list[str]) -> di
         return None
     try:
         cliente = genai.Client(api_key=api_key)
-        jpeg = _imagen_a_jpeg_bytes(data)
+        jpeg = data if data[:2] == b"\xff\xd8" else _imagen_a_jpeg_bytes(data)
         parte = types.Part.from_bytes(data=jpeg, mime_type="image/jpeg")
         config = types.GenerateContentConfig(temperature=0, response_mime_type="application/json")
-        for modelo in modelos[:4]:
+        for modelo in modelos[:2]:
             try:
                 resp = cliente.models.generate_content(
                     model=modelo,
@@ -687,9 +770,10 @@ def inventario_desde_vision(payload: dict[str, Any], formato: str | None = None)
             continue
         if _parece_encabezado_no_sku(sku):
             continue
+        if _es_ruido_sku(sku):
+            continue
         if sku.replace("-", "").isalpha():
             continue
-        qty = _qty_esperado_fila(fila)
         desc = str(
             fila.get("descripcion")
             or fila.get("SKU Description")
@@ -697,6 +781,9 @@ def inventario_desde_vision(payload: dict[str, Any], formato: str | None = None)
             or fila.get("description")
             or sku
         )
+        if _parece_texto_ocr_basura(desc):
+            continue
+        qty = _qty_esperado_fila(fila)
         vistos.add(sku)
         skus.append(_sku_item(sku, qty, desc[:80]))
     contenedor = ""
@@ -749,9 +836,14 @@ def procesar_documento(data: bytes, formato: str | None = None) -> dict[str, Any
             if item.get("sku")
             and not str(item.get("sku", "")).replace("-", "").isalpha()
             and not _parece_encabezado_no_sku(str(item.get("sku")))
+            and not _es_ruido_sku(str(item.get("sku")))
+            and not _parece_texto_ocr_basura(str(item.get("producto") or ""))
         ]
-        if inventario.get("skus"):
+        if inventario.get("skus") and _lectura_local_confiable(inventario, texto):
             return inventario
+        if inventario.get("skus"):
+            print("[AL OCR] Respaldo Tesseract descartado: lectura ilegible.", flush=True)
+            inventario["skus"] = []
 
         easy_forzado = os.environ.get("AL_EASYOCR", "").strip().lower() in {"1", "true", "yes"}
         if _hay_clave_vision() and not easy_forzado:
@@ -869,9 +961,40 @@ def _es_ruido_sku(token: str) -> bool:
         return True
     if limpio.isalpha():
         return True
-    if len(limpio) < 5:
+    if len(limpio) < 6:
         return True
     return False
+
+
+def _parece_texto_ocr_basura(texto: str) -> bool:
+    """Detecta lecturas giradas tipo QDee... / S3TVS ONOTSAS."""
+    t = (texto or "").strip()
+    if not t:
+        return False
+    raro = sum(1 for c in t if not (c.isalnum() or c.isspace() or c in "-./#&+()"))
+    if raro >= 3:
+        return True
+    if re.search(r"[a-z]{2,}[A-Z]{3,}[a-z]", t):
+        return True
+    letras = [c for c in t if c.isalpha()]
+    if len(letras) >= 12:
+        minus = sum(1 for c in letras if c.islower())
+        ratio = minus / len(letras)
+        if 0.12 < ratio < 0.88 and re.search(r"[A-Z]{4,}", t) and re.search(r"[a-z]{4,}", t):
+            return True
+    return False
+
+
+def _lectura_local_confiable(inventario: dict[str, Any], texto: str) -> bool:
+    skus = inventario.get("skus") or []
+    if not skus:
+        return False
+    if any(_parece_texto_ocr_basura(str(item.get("producto") or "")) for item in skus):
+        return False
+    if any(len(re.sub(r"\D", "", str(item.get("sku") or ""))) >= 9 for item in skus):
+        return True
+    upper = (texto or "").upper()
+    return "INBOUND" in upper or "HUSKY" in upper or "EXP EACHES" in upper
 
 
 def _qty_de_linea(linea: str) -> int | None:

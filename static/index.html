@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#0b1220" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="AL Lumper" />
+    <title>AL - Asistente de Lumper</title>
+    <link rel="manifest" href="/static/manifest.json" />
+    <link rel="icon" href="/static/icon.svg" type="image/svg+xml" />
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              yard: { 900: "#0b1220", 800: "#121a2b", 700: "#1b2538" },
+              safety: "#f5b301",
+            },
+          },
+        },
+      };
+    </script>
+    <link rel="stylesheet" href="/static/styles.css?v=2.9" />
+    <style>
+      .count-field {
+        justify-content: flex-end !important;
+      }
+      .count-field-label {
+        flex: 0 0 auto !important;
+        text-align: right;
+        margin-right: 10px;
+      }
+      .historial-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.85rem;
+      }
+      .historial-table th,
+      .historial-table td {
+        padding: 8px 6px;
+        border-bottom: 1px solid #2a3550;
+        text-align: left;
+      }
+      .historial-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 14px;
+      }
+      .historial-empty {
+        color: #94a3b8;
+        text-align: center;
+        padding: 18px 8px;
+      }
+      .btn-whatsapp {
+        min-height: 44px;
+        border: 0;
+        border-radius: 12px;
+        background: #128c7e;
+        color: #fff;
+        font-weight: 800;
+        padding: 8px 12px;
+        cursor: pointer;
+      }
+      .complete-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 14px;
+      }
+      .copy-toast {
+        position: fixed;
+        left: 12px;
+        right: 12px;
+        bottom: calc(88px + env(safe-area-inset-bottom));
+        z-index: 60;
+        background: #166534;
+        color: #dcfce7;
+        font-weight: 800;
+        text-align: center;
+        padding: 12px 14px;
+        border-radius: 14px;
+      }
+      .copy-toast.hidden {
+        display: none;
+      }
+    </style>
+  </head>
+  <body class="bg-yard-900 text-slate-100">
+    <div id="license-lock" class="overlay hidden" role="alertdialog" aria-modal="true">
+      <div class="overlay-card">
+        <p class="kicker">Licencia</p>
+        <h2>Licencia Expirada o Inválida</h2>
+        <p id="license-lock-msg">Licencia Expirada o Inválida. Por favor contacte al desarrollador para renovar su servicio.</p>
+      </div>
+    </div>
+
+    <div id="complete-alert" class="overlay hidden" role="alertdialog" aria-modal="true">
+      <div class="overlay-card complete-card">
+        <p class="kicker">Contenedor</p>
+        <h2>¡Descarga completa!</h2>
+        <p id="complete-alert-msg">El contenedor se ha descargado por completo.</p>
+        <div class="complete-actions">
+          <button type="button" class="btn-whatsapp" id="complete-alert-whatsapp">📲 Copiar para WhatsApp</button>
+          <button type="button" class="btn-primary" id="complete-alert-close">Cerrar</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="settings-overlay" class="overlay settings-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+      <div class="settings-panel">
+        <div class="settings-head">
+          <div>
+            <p class="kicker">Ajustes</p>
+            <h2 id="settings-title">Configuración de Comandos de Voz</h2>
+          </div>
+          <button type="button" class="btn-ghost" id="settings-close">Volver</button>
+        </div>
+        <p class="muted settings-help">
+          Edite la frase clave o agregue sinónimos separados por coma. AL usará estas frases al escuchar al operador.
+        </p>
+        <article class="settings-card settings-license">
+          <p class="kicker">Cliente</p>
+          <p id="settings-cliente-nombre" class="settings-license-name">—</p>
+          <p id="settings-cliente-meta" class="muted">—</p>
+        </article>
+        <div id="settings-command-list" class="settings-list"></div>
+        <p id="settings-status" class="settings-status" aria-live="polite"></p>
+        <button type="button" id="settings-save" class="btn-primary settings-save">GUARDAR COMANDOS</button>
+      </div>
+    </div>
+
+    <div id="historial-overlay" class="overlay settings-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="historial-title">
+      <div class="settings-panel">
+        <div class="settings-head">
+          <div>
+            <p class="kicker">Jornada</p>
+            <h2 id="historial-title">Ver Historial</h2>
+          </div>
+          <button type="button" class="btn-ghost" id="historial-close">Volver</button>
+        </div>
+        <p id="historial-contador" class="settings-license-name">Contenedores procesados hoy: 0</p>
+        <label class="muted settings-help" for="historial-fecha">Fecha</label>
+        <select id="historial-fecha" class="filter-input" style="width: 100%; max-width: none; margin-bottom: 12px;"></select>
+        <div id="historial-lista"></div>
+        <p id="historial-status" class="settings-status" aria-live="polite"></p>
+        <div class="historial-actions">
+          <button type="button" id="historial-resumen-dia" class="btn-whatsapp">📲 Copiar Resumen del Día</button>
+          <button type="button" id="historial-limpiar" class="btn-ghost">Limpiar historial</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="sku-modal" class="overlay hidden" role="dialog" aria-modal="true">
+      <div class="overlay-card wide">
+        <p class="kicker">Coincidencias</p>
+        <h2 id="sku-modal-title">Selecciona el SKU</h2>
+        <p id="sku-modal-sub" class="muted"></p>
+        <div id="sku-modal-list" class="sku-giant-list"></div>
+        <button type="button" class="btn-ghost" id="sku-modal-close">Cerrar</button>
+      </div>
+    </div>
+
+    <header class="topbar">
+      <div class="brand">
+        <span class="logo">AL</span>
+        <div>
+          <h1>Asistente de Lumper</h1>
+          <p id="client-label" class="muted client-label"></p>
+          <p id="container-label" class="muted">Sin contenedor cargado</p>
+        </div>
+      </div>
+      <div class="top-actions">
+        <button type="button" id="btn-settings" class="btn-settings" title="Configuración de comandos de voz" aria-label="Configuración">
+          ⚙️
+        </button>
+        <span id="license-chip" class="chip">Licencia</span>
+        <span id="sku-activo-chip" class="chip chip-dim">SKU —</span>
+      </div>
+    </header>
+
+    <main id="app-workspace">
+    <section class="kpi-grid" aria-label="Indicadores de avance">
+      <article class="kpi-card">
+        <p>Cajas pendientes</p>
+        <strong id="kpi-cajas">0</strong>
+      </article>
+      <article class="kpi-card">
+        <p>SKUs pendientes</p>
+        <strong id="kpi-skus">0</strong>
+      </article>
+      <article class="kpi-card">
+        <p>% de avance</p>
+        <strong id="kpi-avance">0%</strong>
+      </article>
+    </section>
+
+    <section class="action-stack" aria-label="Acciones de hoja">
+      <div class="toolbar toolbar-row toolbar-capture">
+        <label class="btn-primary file-btn file-btn-main">
+          📷 Tomar Foto
+          <input id="file-input-camera" type="file" accept="image/*" capture="environment" hidden />
+        </label>
+        <label class="btn-secondary file-btn">
+          📁 Cargar Imagen
+          <input id="file-input-gallery" type="file" accept="image/*" hidden />
+        </label>
+        <button type="button" id="btn-sumar-hoja" class="btn-secondary">📄 Sumar Siguiente Hoja</button>
+      </div>
+      <div class="toolbar toolbar-row toolbar-control">
+        <button type="button" id="btn-cerrar-contenedor" class="btn-secondary">🚚 Cerrar Contenedor</button>
+        <button type="button" id="btn-historial" class="btn-secondary">📋 Ver Historial</button>
+        <button type="button" id="btn-estatus" class="btn-estatus" title="Consultar estatus del contenedor">ESTATUS</button>
+      </div>
+    </section>
+
+    <section class="panel count-panel" aria-label="Conteo táctil">
+      <div class="panel-head">
+        <div>
+          <p class="kicker">SKU activo</p>
+          <h2 id="count-sku-label">Seleccione un SKU en la tabla</h2>
+        </div>
+        <span id="count-sku-meta" class="muted">0 / 0</span>
+      </div>
+      <p id="pallet-breakdown" class="pallet-breakdown">0 / 0 cajas</p>
+      <div class="count-field">
+        <label class="count-field-label" for="paleta-input">Cajas por paleta</label>
+        <input id="paleta-input" class="paleta-input" type="number" inputmode="numeric" min="0" step="1" value="0" />
+      </div>
+      <div class="count-field">
+        <label class="count-field-label" for="cajas-input">Cajas a procesar</label>
+        <input id="cajas-input" class="count-input" type="number" inputmode="numeric" min="0" step="1" value="0" />
+      </div>
+      <div class="count-actions">
+        <button type="button" id="btn-sumar-cajas" class="btn-primary btn-count">SUMAR CAJAS</button>
+        <button type="button" id="btn-fijar-cajas" class="btn-secondary btn-count">FIJAR</button>
+      </div>
+    </section>
+
+    <section class="panel" id="inventario-panel">
+      <div class="panel-head inventario-head">
+        <h2>Inventario de sesión</h2>
+        <div class="inventario-head-actions">
+          <input id="tabla-filtro" class="filter-input" type="search" placeholder="Filtrar SKU…" />
+          <button type="button" id="btn-limpiar-inventario" class="btn-ghost">🧹 Limpiar inventario</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>SKU</th>
+              <th>Esp.</th>
+              <th>Cnt</th>
+              <th>Estado</th>
+            </tr>
+          </thead>
+          <tbody id="tabla-skus">
+            <tr>
+              <td colspan="4" class="empty">Escanee o cargue la foto de la hoja de papel.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel chat-panel">
+      <details id="chat-expander" class="chat-expander">
+        <summary class="chat-summary">
+          <span class="chat-summary-title">Registro de voz</span>
+          <span id="wake-hint" class="muted">Di “Oye AL”</span>
+          <span class="chat-chevron" aria-hidden="true">▾</span>
+        </summary>
+        <div id="chat-log" class="chat-log" aria-live="polite"></div>
+        <div class="chat-actions">
+          <button type="button" id="btn-limpiar-chat" class="btn-ghost btn-limpiar-chat">Limpiar registro</button>
+        </div>
+      </details>
+    </section>
+
+    <div id="live-transcript" class="live-transcript hidden" aria-live="polite">
+      <span class="live-kicker">Mic</span>
+      <span id="live-transcript-text"></span>
+    </div>
+
+    <button type="button" id="mic-fab" class="mic-fab" aria-pressed="false" title="Micrófono">
+      <span id="mic-light" class="mic-light idle"></span>
+      <span id="mic-label">Toca para hablar</span>
+    </button>
+    </main>
+
+    <div id="copy-toast" class="copy-toast hidden" role="status" aria-live="polite">¡Reporte copiado al portapapeles!</div>
+
+    <div id="modal-cargando" class="modal-cargando" style="display: none;" role="status" aria-live="polite" aria-busy="true">
+      <div class="modal-cargando-card">
+        <div class="reloj-arena" aria-hidden="true">⌛</div>
+        <p id="texto-cargando">⌛ Procesando hoja de recepción...</p>
+      </div>
+    </div>
+
+    <div id="modal-estatus" class="modal-overlay" style="display: none;">
+      <div class="modal-content">
+        <span class="close-modal" onclick="cerrarModalEstatus()">&times;</span>
+        <h2>📊 Estatus del Contenedor</h2>
+        <div id="contenido-estatus"></div>
+        <button onclick="cerrarModalEstatus()" class="btn-oscuro" style="margin-top:15px; width:100%;">Cerrar</button>
+      </div>
+    </div>
+
+    <script src="/static/config.js"></script>
+    <script src="/static/app.js?v=2.9"></script>
+  </body>
+</html>

@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+*.egg-info/
+.DS_Store
+data/*.csv
+!data/.gitkeep
+.idea/
+.vscode/
+data/sesion_chat.json
+data/inventario_sesion.json

@@ -1451,7 +1451,7 @@
       })
       .join("");
     body.querySelectorAll(".sku-row").forEach((row) => {
-      row.addEventListener("click", () => seleccionarSku(row.dataset.sku, true));
+      row.addEventListener("click", () => seleccionarSkuPorClic(row.dataset.sku));
     });
   }
 
@@ -1565,7 +1565,8 @@
   }
 
   function seleccionarSku(sku, anunciar = false) {
-    state.skuActivo = sku;
+    const skuCompleto = textoSku(sku);
+    state.skuActivo = skuCompleto;
     persistirInventario();
     const panel = $("inventario-panel");
     if (panel) panel.classList.remove("needs-sku");
@@ -1573,13 +1574,26 @@
     renderTabla();
     $("sku-modal").classList.add("hidden");
     if (anunciar) {
-      const item = (state.inventario.skus || []).find((row) => row.sku === sku);
+      const item = encontrarSku(skuCompleto);
       if (item) {
         responder(
           `SKU ${item.sku} seleccionado. Esperadas ${item.cantidad_esperada}, contadas ${item.contador}.`
         );
       }
     }
+  }
+
+  function seleccionarSkuPorClic(sku) {
+    const skuCompleto = textoSku(sku);
+    if (!skuCompleto) return;
+    const skuCorto = skuCompleto.slice(-4);
+    seleccionarSku(skuCompleto, false);
+    const item = encontrarSku(skuCompleto);
+    const enPantalla = item
+      ? `SKU ${item.sku} seleccionado. Esperadas ${item.cantidad_esperada}, contadas ${item.contador}.`
+      : `SKU ${skuCompleto} seleccionado.`;
+    pushChat("al", enPantalla, { evento: "sku_click", sku: skuCompleto });
+    hablar(`Seleccionado SKU ${skuCorto}`);
   }
 
   function mostrarCoincidencias(resultado) {
@@ -1594,7 +1608,7 @@
       )
       .join("");
     $("sku-modal-list").querySelectorAll(".sku-giant").forEach((btn) => {
-      btn.addEventListener("click", () => seleccionarSku(btn.dataset.sku, true));
+      btn.addEventListener("click", () => seleccionarSkuPorClic(btn.dataset.sku));
     });
     $("sku-modal").classList.remove("hidden");
   }

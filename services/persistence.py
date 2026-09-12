@@ -95,9 +95,15 @@ class JsonFileStore(StorageBackend):
         data.setdefault("skus", [])
         data.setdefault("contenedor", "")
         data.setdefault("formato", "")
+        for item in data.get("skus") or []:
+            if isinstance(item, dict):
+                item["sku"] = str(item.get("sku") if item.get("sku") is not None else "").strip()
         return data
 
     def save_inventory(self, data: dict[str, Any]) -> None:
+        for item in (data.get("skus") or []):
+            if isinstance(item, dict):
+                item["sku"] = str(item.get("sku") if item.get("sku") is not None else "").strip()
         _escribir_json(INVENTARIO_PATH, data)
 
     def load_chat(self) -> dict[str, Any]:
@@ -145,7 +151,7 @@ class JsonFileStore(StorageBackend):
                 writer.writerow(
                     {
                         "contenedor": inventario.get("contenedor", ""),
-                        "sku": item.get("sku", ""),
+                        "sku": str(item.get("sku") if item.get("sku") is not None else "").strip(),
                         "producto": item.get("producto", ""),
                         "cantidad_esperada": item.get("cantidad_esperada", 0),
                         "contador": item.get("contador", 0),
@@ -168,7 +174,7 @@ class CsvFileStore:
         with path.open("r", encoding="utf-8-sig", newline="") as handle:
             reader = csv.DictReader(handle)
             for row in reader:
-                sku = (
+                sku = str(
                     row.get("sku")
                     or row.get("SKU")
                     or row.get("Product")

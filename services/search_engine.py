@@ -5,8 +5,23 @@ from __future__ import annotations
 from typing import Any
 
 
-def normalizar_codigo(valor: str) -> str:
-    return "".join(ch for ch in str(valor).upper() if ch.isalnum())
+def sku_como_texto(valor: Any) -> str:
+    """SKU siempre es texto: no se convierte a int (conserva ceros a la izquierda)."""
+    if valor is None:
+        return ""
+    return str(valor).strip()
+
+
+def normalizar_codigo(valor: Any) -> str:
+    return "".join(ch for ch in sku_como_texto(valor).upper() if ch.isalnum())
+
+
+def coincide_por_sufijo(sku: Any, consulta: Any) -> bool:
+    """True si el SKU termina en la consulta (endsWith), tras recortar espacios."""
+    sufijo = normalizar_codigo(consulta)
+    if not sufijo:
+        return True
+    return normalizar_codigo(sku).endswith(sufijo)
 
 
 def extraer_sufijo(dictado: str, minimo: int = 2) -> str:
@@ -38,7 +53,7 @@ def buscar_por_sufijo(
         }
 
     sufijo = codigo if len(codigo) >= minimo else codigo
-    hits = [item for item in skus if normalizar_codigo(item.get("sku", "")).endswith(sufijo)]
+    hits = [item for item in skus if coincide_por_sufijo(item.get("sku", ""), sufijo)]
 
     total = len(hits)
     unica = total == 1

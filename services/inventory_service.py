@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from services.persistence import get_store
-from services.search_engine import buscar_por_sufijo, normalizar_codigo
+from services.search_engine import buscar_por_sufijo, coincide_por_sufijo, normalizar_codigo, sku_como_texto
 
 
 def desglose_paletas(cajas: int, factor: int) -> dict[str, Any]:
@@ -42,7 +42,13 @@ def desglose_paletas(cajas: int, factor: int) -> dict[str, Any]:
     }
 
 
+def _asegurar_sku_texto(item: dict[str, Any]) -> dict[str, Any]:
+    item["sku"] = sku_como_texto(item.get("sku"))
+    return item
+
+
 def _recalcular_estado(item: dict[str, Any]) -> dict[str, Any]:
+    _asegurar_sku_texto(item)
     esperado = int(item.get("cantidad_esperada") or 0)
     contador = int(item.get("contador") or 0)
     factor = int(item.get("cajas_por_paleta") or 0)
@@ -112,16 +118,25 @@ def kpis(inventario: dict[str, Any] | None = None) -> dict[str, Any]:
 def buscar(dictado: str, minimo: int | None = None) -> dict[str, Any]:
     inventario = cargar_inventario()
     cfg_min = minimo if minimo is not None else 2
-    resultado = buscar_por_sufijo(inventario.get("skus") or [], dictado, minimo=cfg_min)
+    resultado = buscar_por_sufijo(
+        inventario.get("skus") or [],
+        sku_como_texto(dictado),
+        minimo=cfg_min,
+    )
     resultado["contenedor"] = inventario.get("contenedor") or ""
     return resultado
 
 
 def _encontrar_sku(skus: list[dict[str, Any]], sku: str) -> dict[str, Any] | None:
     objetivo = normalizar_codigo(sku)
-    for item in skus:
-        if normalizar_codigo(item.get("sku", "")) == objetivo:
-            return item
+    if not objetivo:
+        return None
+    exactos = [item for item in skus if normalizar_codigo(item.get("sku", "")) == objetivo]
+    if exactos:
+        return exactos[0]
+    hits = [item for item in skus if coincide_por_sufijo(item.get("sku", ""), objetivo)]
+    if len(hits) == 1:
+        return hits[0]
     return None
 
 

@@ -119,7 +119,7 @@ def _ahora() -> str:
 
 
 def _sku_item(sku: str, qty: int, producto: str = "") -> dict[str, Any]:
-    codigo = _sanear_sku(sku)
+    codigo = _sanear_sku(str(sku).strip() if sku is not None else "")
     return {
         "sku": codigo,
         "producto": (producto or codigo).strip(),
@@ -132,8 +132,8 @@ def _sku_item(sku: str, qty: int, producto: str = "") -> dict[str, Any]:
 
 
 def _sanear_sku(token: str) -> str:
-    """Quita espacios y corrige O/0, I/l/1 típicos del OCR."""
-    crudo = re.sub(r"\s+", "", str(token).upper())
+    """Quita espacios y corrige O/0, I/l/1 típicos del OCR. Siempre texto."""
+    crudo = re.sub(r"\s+", "", str(token if token is not None else "").strip().upper())
     limpio: list[str] = []
     for i, ch in enumerate(crudo):
         prev_d = i > 0 and crudo[i - 1].isdigit()
@@ -850,7 +850,10 @@ def inventario_desde_vision(payload: dict[str, Any], formato: str | None = None)
     for fila in filas or []:
         if not isinstance(fila, dict):
             continue
-        sku = _sanear_sku(str(fila.get("sku") or fila.get("SKU") or ""))
+        sku_crudo = fila.get("sku")
+        if sku_crudo is None:
+            sku_crudo = fila.get("SKU")
+        sku = _sanear_sku(sku_crudo)
         if not sku or len(sku) < 4 or sku in vistos:
             continue
         if _parece_encabezado_no_sku(sku):

@@ -130,13 +130,13 @@ def get_estatus() -> dict[str, Any]:
 def post_buscar(body: BuscarBody) -> dict[str, Any]:
     cfg = get_store().load_config()
     minimo = body.minimo if body.minimo is not None else int(cfg.get("sufijo_default") or 2)
-    return inventory_service.buscar(body.dictado, minimo=minimo)
+    return inventory_service.buscar(str(body.dictado).strip(), minimo=minimo)
 
 
 @app.post("/api/inventario/conteo")
 def post_conteo(body: ConteoBody) -> dict[str, Any]:
     try:
-        return inventory_service.aplicar_conteo(body.sku, body.cantidad, body.modo)
+        return inventory_service.aplicar_conteo(str(body.sku).strip(), body.cantidad, body.modo)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
@@ -146,7 +146,7 @@ def post_conteo(body: ConteoBody) -> dict[str, Any]:
 @app.post("/api/inventario/paleta")
 def post_paleta(body: PaletaBody) -> dict[str, Any]:
     try:
-        return inventory_service.actualizar_paleta(body.sku, body.cajas_por_paleta)
+        return inventory_service.actualizar_paleta(str(body.sku).strip(), body.cajas_por_paleta)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:

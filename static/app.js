@@ -247,8 +247,14 @@
       localStorage.setItem(
         LS_INVENTARIO,
         JSON.stringify({
-          inventario: state.inventario,
-          skuActivo: state.skuActivo,
+          inventario: {
+            ...state.inventario,
+            skus: (state.inventario.skus || []).map((item) => ({
+              ...item,
+              sku: textoSku(item.sku),
+            })),
+          },
+          skuActivo: state.skuActivo == null ? null : textoSku(state.skuActivo),
           guardado_en: new Date().toISOString(),
         })
       );
@@ -276,10 +282,20 @@
     return Math.floor(n);
   }
 
+  function textoSku(valor) {
+    return String(valor ?? "").trim();
+  }
+
   function normalizarCodigo(valor) {
-    return String(valor || "")
+    return textoSku(valor)
       .toUpperCase()
       .replace(/[^A-Z0-9]/g, "");
+  }
+
+  function coincideSufijoSku(sku, consulta) {
+    const q = normalizarCodigo(consulta);
+    if (!q) return true;
+    return normalizarCodigo(sku).endsWith(q);
   }
 
   function recalcularSku(item) {
@@ -298,7 +314,7 @@
   }
 
   function normalizarSkuItem(raw) {
-    const sku = String((raw && (raw.sku || raw.SKU || raw.Product || raw.producto)) || "").trim();
+    const sku = textoSku(raw && (raw.sku || raw.SKU || raw.Product || raw.producto));
     const producto = String((raw && (raw.producto || raw.Product || raw.descripcion || raw.description || sku)) || "").trim();
     return recalcularSku({
       sku,
@@ -785,7 +801,7 @@
     }
     const minimo = Number(state.config && state.config.sufijo_default) || 2;
     const sufijo = codigo.length >= minimo ? codigo : codigo;
-    const hits = (state.inventario.skus || []).filter((item) => normalizarCodigo(item.sku).endsWith(sufijo));
+    const hits = (state.inventario.skus || []).filter((item) => coincideSufijoSku(item.sku, sufijo));
     const total = hits.length;
     let mensaje = `Ningún SKU termina en ${sufijo}.`;
     if (total === 1) {
@@ -1385,17 +1401,18 @@
 
   function renderTabla() {
     const body = $("tabla-skus");
-    const q = state.filtro.trim().toUpperCase();
-    const rows = (state.inventario.skus || []).filter((item) => !q || String(item.sku).includes(q));
+    const q = textoSku(state.filtro);
+    const rows = (state.inventario.skus || []).filter((item) => coincideSufijoSku(item.sku, q));
     if (!rows.length) {
       body.innerHTML = `<tr><td colspan="4" class="empty">Sin SKUs para mostrar.</td></tr>`;
       return;
     }
     body.innerHTML = rows
       .map((item) => {
-        const active = state.skuActivo === item.sku ? "active" : "";
-        return `<tr class="sku-row ${item.estado} ${active}" data-sku="${item.sku}" role="button" tabindex="0">
-          <td><strong>${item.sku}</strong><br /><span class="muted">${item.producto || ""}</span></td>
+        const codigo = textoSku(item.sku);
+        const active = textoSku(state.skuActivo) === codigo ? "active" : "";
+        return `<tr class="sku-row ${item.estado} ${active}" data-sku="${escapar(codigo)}" role="button" tabindex="0">
+          <td><strong>${escapar(codigo)}</strong><br /><span class="muted">${item.producto || ""}</span></td>
           <td>${item.cantidad_esperada}</td>
           <td>${item.contador}${
             Number(item.cajas_por_paleta) > 0
@@ -2164,7 +2181,7 @@
     const fileInputLegacy = $("file-input");
     if (fileInputLegacy) enlazarCargaHoja("file-input");
     $("tabla-filtro").addEventListener("input", (event) => {
-      state.filtro = event.target.value;
+      state.filtro = textoSku(event.target.value);
       renderTabla();
     });
     const btnLimpiarInventario = $("btn-limpiar-inventario");

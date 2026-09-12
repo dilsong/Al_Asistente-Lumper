@@ -298,6 +298,33 @@
     return normalizarCodigo(sku).endsWith(q);
   }
 
+  function skuParaVoz(sku) {
+    const compacto = normalizarCodigo(sku);
+    if (!compacto) return "";
+    const cola = compacto.length > 4 ? compacto.slice(-4) : compacto;
+    return cola.split("").join(" ");
+  }
+
+  function textoParaVoz(texto) {
+    let out = String(texto ?? "");
+    const conocidos = new Set();
+    (state.inventario.skus || []).forEach((item) => {
+      const codigo = textoSku(item && item.sku);
+      if (codigo) conocidos.add(codigo);
+    });
+    const activo = textoSku(state.skuActivo);
+    if (activo) conocidos.add(activo);
+    Array.from(conocidos)
+      .sort((a, b) => b.length - a.length)
+      .forEach((sku) => {
+        const voz = skuParaVoz(sku);
+        if (!voz) return;
+        const escaped = sku.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        out = out.replace(new RegExp(escaped, "g"), voz);
+      });
+    return out;
+  }
+
   function recalcularSku(item) {
     const esperado = enteroNoNegativo(item.cantidad_esperada);
     const contador = enteroNoNegativo(item.contador);
@@ -1518,7 +1545,7 @@
     } catch {
       /* noop */
     }
-    const utter = new SpeechSynthesisUtterance(texto);
+    const utter = new SpeechSynthesisUtterance(textoParaVoz(texto));
     utter.lang = idiomaReconocimiento();
     utter.rate = 1.02;
     utter.volume = 1;

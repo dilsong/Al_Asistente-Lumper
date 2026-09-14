@@ -23,6 +23,9 @@ INVENTARIO_VACIO: dict[str, Any] = {
     "formato": "",
     "fecha_carga": None,
     "skus": [],
+    "hojasProcesadas": 0,
+    "operador": "",
+    "puerta": "",
 }
 
 CONFIG_DEFAULT: dict[str, Any] = {

@@ -46,6 +46,48 @@ body {
   margin-bottom: 12px;
 }
 
+.session-meta {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.session-meta-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  padding: 10px 12px;
+}
+
+.session-meta-field span {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.session-meta-field input {
+  min-height: 44px;
+  border: 0;
+  border-radius: 10px;
+  background: #0b1220;
+  color: var(--text);
+  font-size: 1rem;
+  font-weight: 700;
+  padding: 8px 10px;
+}
+
+@media (max-width: 520px) {
+  .session-meta {
+    grid-template-columns: 1fr;
+  }
+}
+
 .brand {
   display: flex;
   gap: 12px;
@@ -556,6 +598,61 @@ body {
   color: #fde68a;
 }
 
+.peso-badge {
+  display: inline-block;
+  margin-top: 4px;
+  margin-left: 0;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #7c2d12;
+  color: #ffedd5;
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+}
+
+.peso-input {
+  flex: 0 0 150px;
+  width: 150px;
+  max-width: 160px;
+  min-height: 64px;
+  padding: 12px 8px;
+  border-radius: 16px;
+  border: 2px solid var(--line);
+  background: #0b1220;
+  color: var(--text);
+  text-align: center;
+  font-size: 1.35rem;
+  font-weight: 800;
+}
+
+.peso-input:disabled {
+  opacity: 0.45;
+}
+
+.peso-lbs-label {
+  margin: -4px 0 12px;
+  text-align: right;
+  color: var(--amber);
+  font-weight: 800;
+  font-size: 0.9rem;
+}
+
+.sku-alert {
+  margin: 0 0 12px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: #7f1d1d;
+  border: 1px solid #f87171;
+  color: #fee2e2;
+  font-weight: 800;
+  text-align: center;
+}
+
+.sku-alert.hidden {
+  display: none;
+}
+
 .count-input {
   flex: 0 0 150px;
   width: 150px;
@@ -663,7 +760,8 @@ tr.sku-row {
   cursor: pointer;
 }
 
-tr.sku-row.active {
+tr.sku-row.active,
+tr.sku-row.selected {
   outline: 2px solid var(--amber);
 }
 
@@ -798,6 +896,20 @@ tr.exceso {
 
 .overlay-card.wide {
   width: min(640px, 100%);
+}
+
+.peso-alerta-card {
+  border: 2px solid var(--amber);
+}
+
+.peso-alerta-card h2 {
+  color: var(--amber);
+}
+
+.peso-alerta-card .btn-primary {
+  width: 100%;
+  min-height: 48px;
+  margin-top: 14px;
 }
 
 .sku-giant-list {

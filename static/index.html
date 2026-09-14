@@ -22,7 +22,7 @@
         },
       };
     </script>
-    <link rel="stylesheet" href="/static/styles.css?v=3.2" />
+    <link rel="stylesheet" href="/static/styles.css?v=3.7" />
     <style>
       .count-field {
         justify-content: flex-end !important;
@@ -94,6 +94,15 @@
         <p class="kicker">Licencia</p>
         <h2>Licencia Expirada o Inválida</h2>
         <p id="license-lock-msg">Licencia Expirada o Inválida. Por favor contacte al desarrollador para renovar su servicio.</p>
+      </div>
+    </div>
+
+    <div id="peso-alerta" class="overlay hidden" role="alertdialog" aria-modal="true" aria-labelledby="peso-alerta-title">
+      <div class="overlay-card peso-alerta-card">
+        <p class="kicker">Peso</p>
+        <h2 id="peso-alerta-title">Advertencia</h2>
+        <p id="peso-alerta-msg">Advertencia: El peso ingresado es menor que el del SKU registrado previamente.</p>
+        <button type="button" class="btn-primary" id="peso-alerta-close">Cerrar</button>
       </div>
     </div>
 
@@ -182,6 +191,16 @@
     </header>
 
     <main id="app-workspace">
+    <section class="session-meta" aria-label="Datos de sesión">
+      <label class="session-meta-field" for="operador-input">
+        <span>Operador</span>
+        <input id="operador-input" type="text" autocomplete="name" placeholder="Nombre del operador" />
+      </label>
+      <label class="session-meta-field" for="puerta-input">
+        <span>Número de puerta</span>
+        <input id="puerta-input" type="text" inputmode="text" autocomplete="off" placeholder="Ej. Puerta 5" />
+      </label>
+    </section>
     <section class="kpi-grid" aria-label="Indicadores de avance">
       <article class="kpi-card">
         <p>Cajas pendientes</p>
@@ -225,10 +244,16 @@
         <span id="count-sku-meta" class="muted">0 / 0</span>
       </div>
       <p id="pallet-breakdown" class="pallet-breakdown">0 / 0 cajas</p>
+      <p id="alerta-sku" class="sku-alert hidden" role="alert">Por favor, selecciona un SKU primero</p>
       <div class="count-field">
         <label class="count-field-label" for="paleta-input">Cajas por paleta</label>
         <input id="paleta-input" class="paleta-input" type="number" inputmode="numeric" min="0" step="1" value="0" />
       </div>
+      <div class="count-field">
+        <label class="count-field-label" for="peso-kg-input">Más pesado (kg)</label>
+        <input id="peso-kg-input" class="peso-input" type="number" inputmode="decimal" min="0" step="0.01" value="" placeholder="kg" />
+      </div>
+      <p id="peso-lbs-label" class="peso-lbs-label">0.00 lb</p>
       <div class="count-field">
         <label class="count-field-label" for="cajas-input">Cajas a procesar</label>
         <input id="cajas-input" class="count-input" type="number" inputmode="numeric" min="0" step="1" value="0" />
@@ -310,6 +335,6 @@
     </div>
 
     <script src="/static/config.js"></script>
-    <script src="/static/app.js?v=3.4"></script>
+    <script src="/static/app.js?v=3.7"></script>
   </body>
 </html>

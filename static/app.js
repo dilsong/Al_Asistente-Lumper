@@ -82,6 +82,8 @@
   const LS_INVENTARIO = "al_inventario_activo";
   const LS_COMANDOS = "al_comandos_voz";
   const LS_HISTORIAL = "historialContenedores";
+  const LS_OPERADOR = "al_operador_sesion";
+  const KG_A_LBS = 2.20462;
   const CATALOGO_COMANDOS = [
     { tipo: "SUMAR", titulo: "Sumar cajas", ejemplo: "suma [X]" },
     { tipo: "ESTATUS", titulo: "Consultar resumen", ejemplo: "estatus / status" },
@@ -114,6 +116,8 @@
     kpis: {},
     chat: [],
     skuActivo: null,
+    skuReservadoConteo: null,
+    skuReservadoEn: 0,
     filtro: "",
     listening: false,
     commandArmed: false,
@@ -286,6 +290,208 @@
     return String(valor ?? "").trim();
   }
 
+  function operadorPorDefecto() {
+    return String((window.APP_CONFIG || {}).CLIENTE_OPERADOR || "").trim();
+  }
+
+  function leerOperadorGuardado() {
+    try {
+      return String(localStorage.getItem(LS_OPERADOR) || "").trim();
+    } catch {
+      return "";
+    }
+  }
+
+  function operadorActual() {
+    return String((state.inventario && state.inventario.operador) || leerOperadorGuardado() || operadorPorDefecto()).trim();
+  }
+
+  function guardarOperador(nombre) {
+    const valor = String(nombre || "").trim();
+    if (!state.inventario) state.inventario = inventarioVacio();
+    state.inventario.operador = valor;
+    try {
+      localStorage.setItem(LS_OPERADOR, valor);
+    } catch {
+      /* noop */
+    }
+    persistirInventario();
+  }
+
+  function puertaActual() {
+    return String((state.inventario && state.inventario.puerta) || "").trim();
+  }
+
+  function guardarPuerta(valor) {
+    if (!state.inventario) state.inventario = inventarioVacio();
+    state.inventario.puerta = String(valor || "").trim();
+    persistirInventario();
+  }
+
+  function sincronizarCamposSesion() {
+    const op = $("operador-input");
+    const puerta = $("puerta-input");
+    if (op && document.activeElement !== op) op.value = operadorActual();
+    if (puerta && document.activeElement !== puerta) puerta.value = puertaActual();
+  }
+
+  function librasDesdeKg(kg) {
+    const v = Number(kg);
+    if (!Number.isFinite(v) || v <= 0) return 0;
+    return Math.round(v * KG_A_LBS * 100) / 100;
+  }
+
+  function skuMasPesado() {
+    return (state.inventario.skus || []).find((item) => item && item.masPesado) || null;
+  }
+
+  function resumenPesoMasPesado() {
+    const item = skuMasPesado();
+    if (!item || !(Number(item.pesoKg) > 0)) return null;
+    return {
+      sku: textoSku(item.sku),
+      pesoKg: Number(item.pesoKg) || 0,
+      pesoLbs: Number(item.pesoLbs) || librasDesdeKg(item.pesoKg),
+    };
+  }
+
+  function enforceUnicoMasPesado(inventario) {
+    const data = inventario || state.inventario || inventarioVacio();
+    const skus = data.skus || [];
+    let keeper = -1;
+    skus.forEach((row, idx) => {
+      if (row && row.masPesado && Number(row.pesoKg) > 0) keeper = idx;
+    });
+    skus.forEach((row, idx) => {
+      if (!row) return;
+      if (idx === keeper) {
+        row.masPesado = true;
+        row.pesoKg = Number(row.pesoKg) || 0;
+        row.pesoLbs = Number(row.pesoLbs) > 0 ? Number(row.pesoLbs) : librasDesdeKg(row.pesoKg);
+      } else {
+        row.masPesado = false;
+        row.pesoKg = 0;
+        row.pesoLbs = 0;
+      }
+    });
+    return data;
+  }
+
+  function formatoKg(valor) {
+    const n = Number(valor);
+    if (!Number.isFinite(n)) return "0";
+    const redondeado = Math.round(n * 100) / 100;
+    return Number.isInteger(redondeado) ? String(redondeado) : redondeado.toFixed(2);
+  }
+
+  function mostrarAdvertenciaPesoMenor(kgNuevo, kgAnterior) {
+    const el = $("peso-alerta");
+    const msg = $("peso-alerta-msg");
+    if (msg) {
+      msg.textContent =
+        `Advertencia: El peso ingresado (${formatoKg(kgNuevo)} kg) es menor que el del SKU registrado previamente (${formatoKg(kgAnterior)} kg).`;
+    }
+    if (el) el.classList.remove("hidden");
+  }
+
+  function cerrarAdvertenciaPeso() {
+    const el = $("peso-alerta");
+    if (el) el.classList.add("hidden");
+  }
+
+  function asignarPesoMasPesado(sku, kgCrudo) {
+    const item = encontrarSku(sku);
+    if (!item) return null;
+    const kg = Number(String(kgCrudo ?? "").replace(",", "."));
+    const kgOk = Number.isFinite(kg) && kg > 0 ? Math.round(kg * 100) / 100 : 0;
+    const lbs = librasDesdeKg(kgOk);
+    const anterior = skuMasPesado();
+    const esOtro =
+      Boolean(anterior) && normalizarCodigo(anterior.sku) !== normalizarCodigo(item.sku);
+    const kgAnterior = esOtro ? Number(anterior.pesoKg) || 0 : 0;
+    const avisarMenor = kgOk > 0 && kgAnterior > 0 && kgOk < kgAnterior;
+    (state.inventario.skus || []).forEach((row) => {
+      const mismo = normalizarCodigo(row.sku) === normalizarCodigo(item.sku);
+      if (mismo) {
+        row.masPesado = kgOk > 0;
+        row.pesoKg = kgOk;
+        row.pesoLbs = lbs;
+      } else if (kgOk > 0) {
+        row.masPesado = false;
+        row.pesoKg = 0;
+        row.pesoLbs = 0;
+      }
+    });
+    persistirInventario();
+    if (avisarMenor) mostrarAdvertenciaPesoMenor(kgOk, kgAnterior);
+    deseleccionarSkuActivo();
+    return item;
+  }
+
+  function flushPesoKgActivo() {
+    const campo = $("peso-kg-input");
+    if (!campo || campo.disabled || !state.skuActivo) return;
+    const raw = String(campo.value || "").trim();
+    if (!raw) return;
+    asignarPesoMasPesado(state.skuActivo, raw);
+  }
+
+  function quitarResaltadoSkuVisual() {
+    document.querySelectorAll(".sku-row.active, .sku-row.selected, tr.selected").forEach((row) => {
+      row.classList.remove("active", "selected");
+    });
+    const chip = $("sku-activo-chip");
+    if (chip) {
+      chip.textContent = "SKU —";
+      chip.className = "chip chip-dim";
+    }
+    const panel = $("inventario-panel");
+    if (panel) panel.classList.remove("needs-sku");
+  }
+
+  function soltarFocoSku() {
+    const activo = document.activeElement;
+    if (!activo || activo === document.body) return;
+    const id = activo.id || "";
+    const enSku =
+      (activo.closest && activo.closest(".sku-row")) ||
+      id === "cajas-input" ||
+      id === "paleta-input" ||
+      id === "peso-kg-input";
+    if (enSku && typeof activo.blur === "function") activo.blur();
+  }
+
+  function reservarSkuParaConteo() {
+    if (!state.skuActivo) return;
+    state.skuReservadoConteo = state.skuActivo;
+    state.skuReservadoEn = Date.now();
+  }
+
+  function skuObjetivoConteo() {
+    const fresco = state.skuReservadoEn && Date.now() - state.skuReservadoEn < 900;
+    const reservado = fresco ? state.skuReservadoConteo : null;
+    state.skuReservadoConteo = null;
+    state.skuReservadoEn = 0;
+    return state.skuActivo || reservado || null;
+  }
+
+  function deseleccionarSkuActivo() {
+    state.skuActivo = null;
+    persistirInventario();
+    quitarResaltadoSkuVisual();
+    soltarFocoSku();
+    renderTabla();
+    renderContenedor();
+    quitarResaltadoSkuVisual();
+  }
+
+  function mostrarAlertaSku(mostrar, texto) {
+    const el = $("alerta-sku");
+    if (!el) return;
+    if (texto) el.textContent = texto;
+    el.classList.toggle("hidden", !mostrar);
+  }
+
   function normalizarCodigo(valor) {
     return textoSku(valor)
       .toUpperCase()
@@ -354,11 +560,14 @@
         raw && (raw.cajas_por_paleta ?? raw.TiHi ?? raw.pallet_factor),
         0
       ),
+      masPesado: Boolean(raw && raw.masPesado) && Number(raw.pesoKg) > 0,
+      pesoKg: Number(raw && raw.pesoKg) > 0 ? Math.round(Number(raw.pesoKg) * 100) / 100 : 0,
+      pesoLbs: Number(raw && raw.pesoLbs) > 0 ? Math.round(Number(raw.pesoLbs) * 100) / 100 : 0,
     });
   }
 
   function inventarioVacio() {
-    return { contenedor: "", formato: "", fecha_carga: null, skus: [], hojasProcesadas: 0 };
+    return { contenedor: "", formato: "", fecha_carga: null, skus: [], hojasProcesadas: 0, operador: "", puerta: "" };
   }
 
   function hojasDelContenedor(inventario) {
@@ -372,6 +581,8 @@
     const data = inventario || inventarioVacio();
     if (!Array.isArray(data.skus)) data.skus = [];
     data.hojasProcesadas = hojasDelContenedor(data);
+    if (!data.operador) data.operador = "";
+    if (!data.puerta) data.puerta = "";
     return data;
   }
 
@@ -385,6 +596,8 @@
         fecha_carga: incoming.fecha_carga || new Date().toISOString().slice(0, 19),
         skus: (incoming.skus || []).map(normalizarSkuItem).filter((item) => item.sku),
         hojasProcesadas: 1,
+        operador: actual.operador || incoming.operador || operadorActual(),
+        puerta: actual.puerta || incoming.puerta || "",
       });
     }
     if (!Array.isArray(actual.skus)) actual.skus = [];
@@ -404,6 +617,18 @@
         if (!enteroNoNegativo(exist.cajas_por_paleta) && enteroNoNegativo(item.cajas_por_paleta)) {
           exist.cajas_por_paleta = enteroNoNegativo(item.cajas_por_paleta);
         }
+        if (item.masPesado && Number(item.pesoKg) > 0) {
+          exist.masPesado = true;
+          exist.pesoKg = item.pesoKg;
+          exist.pesoLbs = item.pesoLbs || librasDesdeKg(item.pesoKg);
+          actual.skus.forEach((row) => {
+            if (normalizarCodigo(row.sku) !== key) {
+              row.masPesado = false;
+              row.pesoKg = 0;
+              row.pesoLbs = 0;
+            }
+          });
+        }
         recalcularSku(exist);
       } else {
         actual.skus.push(item);
@@ -411,6 +636,8 @@
       }
     });
     if (!actual.contenedor && incoming.contenedor) actual.contenedor = incoming.contenedor;
+    if (!actual.operador) actual.operador = incoming.operador || operadorActual();
+    if (!actual.puerta && incoming.puerta) actual.puerta = incoming.puerta;
     actual.hojasProcesadas = hojasDelContenedor(actual) + 1;
     return actual;
   }
@@ -450,6 +677,11 @@
       paletasCompletas: enteroNoNegativo(row.paletasCompletas ?? row.total_paletas_completas),
       paletasParciales: enteroNoNegativo(row.paletasParciales ?? row.total_paletas_parciales),
       hojasProcesadas: Math.max(1, enteroNoNegativo(row.hojasProcesadas ?? row.hojas_procesadas, 1)),
+      operador: String(row.operador || "").trim(),
+      puerta: String(row.puerta || row.dockDoor || row.dock_door || "").trim(),
+      skuMasPesado: String(row.skuMasPesado || row.sku_mas_pesado || "").trim(),
+      pesoKg: Number(row.pesoKg) > 0 ? Number(row.pesoKg) : 0,
+      pesoLbs: Number(row.pesoLbs) > 0 ? Number(row.pesoLbs) : 0,
     };
   }
 
@@ -457,6 +689,7 @@
     const kpis = calcularKpis(state.inventario);
     const skus = (state.inventario.skus || []).length;
     if (!skus) return null;
+    const peso = resumenPesoMasPesado();
     return {
       fecha: formatearFechaHora(new Date()),
       contenedor: state.inventario.contenedor || "SIN-ID",
@@ -465,6 +698,11 @@
       paletasCompletas: kpis.paletas_completas || 0,
       paletasParciales: kpis.paletas_parciales || 0,
       hojasProcesadas: Math.max(1, hojasDelContenedor()),
+      operador: operadorActual(),
+      puerta: puertaActual(),
+      skuMasPesado: peso ? peso.sku : "",
+      pesoKg: peso ? peso.pesoKg : 0,
+      pesoLbs: peso ? peso.pesoLbs : 0,
     };
   }
 
@@ -488,12 +726,17 @@
     return [
       "*AL — Cierre de contenedor*",
       `📅 Fecha: ${r.fecha}`,
+      `👷 Operador: ${r.operador || "—"}`,
+      `🚪 Puerta: ${r.puerta || "—"}`,
       `📦 Contenedor: ${r.contenedor}`,
       `📄 Hojas procesadas: ${r.hojasProcesadas}`,
       `🔢 Total SKUs: ${r.totalSkus}`,
       `📦 Total cajas: ${r.totalCajas}`,
       `✅ Paletas completas: ${r.paletasCompletas}`,
       `⚠️ Paletas parciales: ${r.paletasParciales}`,
+      r.skuMasPesado
+        ? `🏋️ Más pesado: ${r.skuMasPesado} · ${Number(r.pesoKg).toFixed(2)} kg / ${Number(r.pesoLbs).toFixed(2)} lb`
+        : "🏋️ Más pesado: —",
     ].join("\n");
   }
 
@@ -570,10 +813,15 @@
       [
         `*#${i + 1} ${row.contenedor}*`,
         `Hora: ${String(row.fecha).slice(11) || row.fecha}`,
+        `👷 Operador: ${row.operador || "—"}`,
+        `🚪 Puerta: ${row.puerta || "—"}`,
         `📄 Hojas procesadas: ${row.hojasProcesadas}`,
         `SKUs: ${row.totalSkus} · Cajas: ${row.totalCajas}`,
         `Paletas: ${row.paletasCompletas} completas · ${row.paletasParciales} parciales`,
-      ].join("\n")
+        row.skuMasPesado
+          ? `🏋️ Más pesado: ${row.skuMasPesado} · ${Number(row.pesoKg).toFixed(2)} kg / ${Number(row.pesoLbs).toFixed(2)} lb`
+          : "",
+      ].filter(Boolean).join("\n")
     );
     return [
       `*AL — Resumen del día ${clave}*`,
@@ -595,9 +843,16 @@
     return `<article class="settings-card">
       <p class="muted">#${numero} · ${escapar(r.fecha)}</p>
       <h3>Contenedor ${escapar(r.contenedor)}</h3>
+      <p>👷 Operador: ${escapar(r.operador || "—")}</p>
+      <p>🚪 Puerta: ${escapar(r.puerta || "—")}</p>
       <p>📄 Hojas procesadas: ${r.hojasProcesadas}</p>
       <p>${r.totalSkus} SKUs · ${r.totalCajas} cajas</p>
       <p>${r.paletasCompletas} paletas completas · ${r.paletasParciales} paletas parciales</p>
+      ${
+        r.skuMasPesado
+          ? `<p>🏋️ Más pesado: ${escapar(r.skuMasPesado)} · ${Number(r.pesoKg).toFixed(2)} kg / ${Number(r.pesoLbs).toFixed(2)} lb</p>`
+          : ""
+      }
       <button type="button" class="btn-whatsapp" data-historial-idx="${idx}">📲 Copiar para WhatsApp</button>
     </article>`;
   }
@@ -685,8 +940,12 @@
   }
 
   function resetearSesionContenedor() {
+    const operador = operadorActual();
     state.inventario = inventarioVacio();
+    state.inventario.operador = operador;
     state.skuActivo = null;
+    state.skuReservadoConteo = null;
+    state.skuReservadoEn = 0;
     state.filtro = "";
     state.cierreRegistrado = false;
     state.modoSumarHoja = false;
@@ -697,8 +956,14 @@
     setCajasCampo(0);
     const paleta = $("paleta-input");
     if (paleta) paleta.value = "0";
+    const peso = $("peso-kg-input");
+    if (peso) peso.value = "";
+    const lbs = $("peso-lbs-label");
+    if (lbs) lbs.textContent = "0.00 lb";
     const panel = $("inventario-panel");
     if (panel) panel.classList.remove("needs-sku");
+    mostrarAlertaSku(false);
+    sincronizarCamposSesion();
     renderKpis();
     renderTabla();
     renderContenedor();
@@ -998,6 +1263,8 @@
       fecha_carga: new Date().toISOString().slice(0, 19),
       skus,
       hojasProcesadas: skus.length ? 1 : 0,
+      operador: "",
+      puerta: "",
     };
   }
 
@@ -1018,6 +1285,8 @@
       fecha_carga: fuente.fecha_carga || new Date().toISOString().slice(0, 19),
       skus: (fuente.skus || []).map(normalizarSkuItem).filter((item) => item.sku),
       hojasProcesadas: enteroNoNegativo(fuente.hojasProcesadas ?? fuente.hojas_procesadas),
+      operador: String(fuente.operador || "").trim(),
+      puerta: String(fuente.puerta || fuente.dockDoor || "").trim(),
     };
     return { inventario, skuActivo };
   }
@@ -1040,8 +1309,13 @@
   function aplicarInventarioCargado(inventario, skuActivo, opciones = {}) {
     const restaurar = Boolean(opciones.restaurar);
     const acumular = !restaurar && ((state.inventario.skus || []).length > 0 || state.modoSumarHoja);
+    const operadorPrev = operadorActual();
+    const puertaPrev = puertaActual();
     const destino = acumular ? fusionarHojaAlContenedor(inventario) : asegurarHojas(inventario);
     (destino.skus || []).forEach(recalcularSku);
+    enforceUnicoMasPesado(destino);
+    if (!destino.operador) destino.operador = operadorPrev;
+    if (!destino.puerta) destino.puerta = puertaPrev;
     state.inventario = destino;
     const existe = skuActivo && encontrarSku(skuActivo);
     state.skuActivo = existe ? existe.sku : null;
@@ -1052,6 +1326,7 @@
     renderKpis();
     renderTabla();
     renderContenedor();
+    sincronizarCamposSesion();
   }
 
   async function cargarInventarioArchivo(file) {
@@ -1096,6 +1371,9 @@
       hojasProcesadas: hojasDelContenedor(),
       fecha_exportacion: new Date().toISOString(),
       sku_activo: state.skuActivo,
+      operador: operadorActual(),
+      puerta: puertaActual(),
+      mas_pesado: resumenPesoMasPesado(),
       kpis,
       estatus: { completo: estatus.completo, mensaje: estatus.mensaje },
       skus: state.inventario.skus || [],
@@ -1316,13 +1594,19 @@
   }
 
   function aplicarSesion(payload) {
+    const operador = operadorActual();
+    const puerta = puertaActual();
     if (payload.inventario) state.inventario = asegurarHojas(payload.inventario);
+    if (!state.inventario.operador) state.inventario.operador = operador;
+    if (!state.inventario.puerta) state.inventario.puerta = puerta;
     (state.inventario.skus || []).forEach(recalcularSku);
+    enforceUnicoMasPesado(state.inventario);
     state.kpis = payload.kpis || calcularKpis(state.inventario);
     persistirInventario();
     renderKpis();
     renderTabla();
     renderContenedor();
+    sincronizarCamposSesion();
   }
 
   function skuActivoItem() {
@@ -1343,12 +1627,15 @@
   }
 
   function pedirSeleccionSku() {
+    const aviso = "Por favor, selecciona un SKU primero";
+    mostrarAlertaSku(true, aviso);
     const panel = $("inventario-panel");
     if (panel) {
       panel.classList.add("needs-sku");
       panel.scrollIntoView({ behavior: "smooth", block: "center" });
     }
-    responder("Selecciona un SKU en la tabla con un toque para aplicar el conteo.");
+    desbloquearVozIos();
+    responder(aviso);
   }
 
   function desglosePaletas(item) {
@@ -1410,6 +1697,17 @@
     if (paleta && document.activeElement !== paleta) {
       paleta.value = item ? String(Number(item.cajas_por_paleta) || 0) : "0";
     }
+    const pesoKg = $("peso-kg-input");
+    const pesoLbs = $("peso-lbs-label");
+    if (pesoKg && document.activeElement !== pesoKg) {
+      pesoKg.value = item && Number(item.pesoKg) > 0 ? String(item.pesoKg) : "";
+      pesoKg.disabled = !item;
+    }
+    if (pesoLbs) {
+      const lbs = item && Number(item.pesoLbs) > 0 ? Number(item.pesoLbs) : 0;
+      pesoLbs.textContent = `${lbs.toFixed(2)} lb`;
+    }
+    sincronizarCamposSesion();
   }
 
   function renderKpis() {
@@ -1437,9 +1735,11 @@
     body.innerHTML = rows
       .map((item) => {
         const codigo = textoSku(item.sku);
-        const active = textoSku(state.skuActivo) === codigo ? "active" : "";
+        const active = textoSku(state.skuActivo) === codigo ? "active selected" : "";
         return `<tr class="sku-row ${item.estado} ${active}" data-sku="${escapar(codigo)}" role="button" tabindex="0">
-          <td><strong>${escapar(codigo)}</strong><br /><span class="muted">${item.producto || ""}</span></td>
+          <td><strong>${escapar(codigo)}</strong>${
+            item.masPesado ? ` <span class="peso-badge">🏋️ Más pesado</span>` : ""
+          }<br /><span class="muted">${item.producto || ""}</span></td>
           <td>${item.cantidad_esperada}</td>
           <td>${item.contador}${
             Number(item.cajas_por_paleta) > 0
@@ -1570,6 +1870,7 @@
     persistirInventario();
     const panel = $("inventario-panel");
     if (panel) panel.classList.remove("needs-sku");
+    mostrarAlertaSku(false);
     renderContenedor();
     renderTabla();
     $("sku-modal").classList.add("hidden");
@@ -1700,12 +2001,13 @@
       pedirSeleccionSku();
       return;
     }
+    flushPesoKgActivo();
     setCajasCampo(cantidad);
     const data = aplicarConteoLocal(objetivo, cantidad, modo);
+    state.skuActivo = null;
     aplicarSesion(data);
-    state.skuActivo = data.sku.sku;
-    persistirInventario();
-    renderContenedor();
+    deseleccionarSkuActivo();
+    mostrarAlertaSku(false);
     await responder(data.mensaje, { sku: data.sku.sku, modo });
   }
 
@@ -1736,8 +2038,7 @@
     }
     const data = actualizarPaletaLocal(state.skuActivo, Math.floor(n));
     aplicarSesion(data);
-    state.skuActivo = data.sku.sku;
-    renderContenedor();
+    deseleccionarSkuActivo();
     const info = desglosePaletas(data.sku);
     await responder(info.voz, { sku: data.sku.sku, evento: "paleta" });
   }
@@ -1749,6 +2050,7 @@
       return;
     }
     const info = desglosePaletas(item);
+    deseleccionarSkuActivo();
     await responder(info.voz, { sku: item.sku, evento: "paletas" });
   }
 
@@ -1768,13 +2070,19 @@
     const contadas = enteroNoNegativo(kpis.cajas_contadas);
     const contenedor = kpis.contenedor || state.inventario.contenedor || "Sin contenedor";
     const cajas = esperadas ? `${contadas} / ${esperadas}` : String(contadas);
+    const peso = resumenPesoMasPesado();
     body.innerHTML = [
+      `<p><strong>Operador</strong><span>${operadorActual() || "—"}</span></p>`,
+      `<p><strong>Puerta</strong><span>${puertaActual() || "—"}</span></p>`,
       `<p><strong>Contenedor</strong><span>${contenedor}</span></p>`,
       `<p><strong>Hojas procesadas</strong><span>${hojas}</span></p>`,
       `<p><strong>SKUs</strong><span>${kpis.skus_totales || 0}</span></p>`,
       `<p><strong>Cajas</strong><span>${cajas}</span></p>`,
       `<p><strong>Paletas completas</strong><span>${kpis.paletas_completas || 0}</span></p>`,
       `<p><strong>Paletas parciales</strong><span>${kpis.paletas_parciales || 0}</span></p>`,
+      peso
+        ? `<p><strong>Más pesado</strong><span>${peso.sku} · ${peso.pesoKg.toFixed(2)} kg / ${peso.pesoLbs.toFixed(2)} lb</span></p>`
+        : `<p><strong>Más pesado</strong><span>—</span></p>`,
     ].join("");
   }
 
@@ -1798,6 +2106,11 @@
   }
 
   async function conteoManual(modo) {
+    const objetivo = skuObjetivoConteo();
+    if (!objetivo) {
+      pedirSeleccionSku();
+      return;
+    }
     const cantidad = leerCajasCampo();
     if (cantidad === null) {
       await responder("Indica las cajas a procesar en el campo numérico.");
@@ -1807,11 +2120,7 @@
       await responder("Indica cuántas cajas sumar. Use +1, +5 o +10, o dicta suma 15.");
       return;
     }
-    if (!state.skuActivo) {
-      pedirSeleccionSku();
-      return;
-    }
-    await aplicarConteo(modo, cantidad, state.skuActivo);
+    await aplicarConteo(modo, cantidad, objetivo);
   }
 
   async function procesarComando(raw) {
@@ -2225,11 +2534,46 @@
       state.filtro = textoSku(event.target.value);
       renderTabla();
     });
+    const operadorInput = $("operador-input");
+    if (operadorInput) {
+      operadorInput.addEventListener("change", (event) => guardarOperador(event.target.value));
+      operadorInput.addEventListener("blur", (event) => guardarOperador(event.target.value));
+    }
+    const puertaInput = $("puerta-input");
+    if (puertaInput) {
+      puertaInput.addEventListener("change", (event) => guardarPuerta(event.target.value));
+      puertaInput.addEventListener("blur", (event) => guardarPuerta(event.target.value));
+    }
+    const pesoKg = $("peso-kg-input");
+    if (pesoKg) {
+      pesoKg.addEventListener("input", (event) => {
+        const lbs = librasDesdeKg(event.target.value);
+        const label = $("peso-lbs-label");
+        if (label) label.textContent = `${lbs.toFixed(2)} lb`;
+      });
+      pesoKg.addEventListener("change", (event) => {
+        const raw = String(event.target.value || "").trim();
+        if (!raw) return;
+        if (!state.skuActivo) {
+          pedirSeleccionSku();
+          event.target.value = "";
+          return;
+        }
+        asignarPesoMasPesado(state.skuActivo, event.target.value);
+      });
+      pesoKg.addEventListener("blur", (event) => {
+        const raw = String(event.target.value || "").trim();
+        if (!raw || !state.skuActivo) return;
+        asignarPesoMasPesado(state.skuActivo, event.target.value);
+      });
+    }
     const btnLimpiarInventario = $("btn-limpiar-inventario");
     if (btnLimpiarInventario) {
       btnLimpiarInventario.addEventListener("click", () => limpiarInventarioSesion());
     }
     $("sku-modal-close").addEventListener("click", () => $("sku-modal").classList.add("hidden"));
+    const pesoAlertaClose = $("peso-alerta-close");
+    if (pesoAlertaClose) pesoAlertaClose.addEventListener("click", () => cerrarAdvertenciaPeso());
     $("complete-alert-close").addEventListener("click", () => mostrarCompleto(false));
     const btnWhatsappCierre = $("complete-alert-whatsapp");
     if (btnWhatsappCierre) {
@@ -2239,6 +2583,8 @@
         copiarTextoWhatsApp(textoWhatsAppCierre(registro));
       });
     }
+    $("btn-sumar-cajas").addEventListener("pointerdown", () => reservarSkuParaConteo());
+    $("btn-fijar-cajas").addEventListener("pointerdown", () => reservarSkuParaConteo());
     $("btn-sumar-cajas").addEventListener("click", () => conteoManual("sumar"));
     $("btn-fijar-cajas").addEventListener("click", () => conteoManual("editar"));
     $("btn-estatus").addEventListener("click", () => {
@@ -2347,6 +2693,12 @@
         : "AL listo. Escanee o cargue la foto de la hoja, o di Oye AL.";
       await pushChat("al", mensaje, { evento: tieneLocal ? "boot_local" : "boot" });
     }
+
+    if (!state.inventario) state.inventario = inventarioVacio();
+    if (!state.inventario.operador) state.inventario.operador = operadorActual();
+    if (state.inventario.puerta == null) state.inventario.puerta = "";
+    persistirInventario();
+    sincronizarCamposSesion();
 
     if ("serviceWorker" in navigator) {
       navigator.serviceWorker.register("/static/sw.js").catch(() => {});

@@ -22,7 +22,7 @@
         },
       };
     </script>
-    <link rel="stylesheet" href="/static/styles.css?v=3.7" />
+    <link rel="stylesheet" href="/static/styles.css?v=3.8" />
     <style>
       .count-field {
         justify-content: flex-end !important;
@@ -102,7 +102,10 @@
         <p class="kicker">Peso</p>
         <h2 id="peso-alerta-title">Advertencia</h2>
         <p id="peso-alerta-msg">Advertencia: El peso ingresado es menor que el del SKU registrado previamente.</p>
-        <button type="button" class="btn-primary" id="peso-alerta-close">Cerrar</button>
+        <div class="peso-alerta-actions">
+          <button type="button" class="btn-secondary" id="peso-alerta-cancelar">Cancelar</button>
+          <button type="button" class="btn-primary" id="peso-alerta-seguir">Seguir</button>
+        </div>
       </div>
     </div>
 
@@ -335,6 +338,6 @@
     </div>
 
     <script src="/static/config.js"></script>
-    <script src="/static/app.js?v=3.7"></script>
+    <script src="/static/app.js?v=3.8"></script>
   </body>
 </html>

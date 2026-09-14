@@ -906,10 +906,17 @@ tr.exceso {
   color: var(--amber);
 }
 
-.peso-alerta-card .btn-primary {
-  width: 100%;
+.peso-alerta-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.peso-alerta-actions .btn-primary,
+.peso-alerta-actions .btn-secondary {
+  flex: 1;
   min-height: 48px;
-  margin-top: 14px;
+  margin: 0;
 }
 
 .sku-giant-list {

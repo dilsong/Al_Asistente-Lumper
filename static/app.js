@@ -132,6 +132,7 @@
     modoSumarHoja: false,
     ultimoCierre: null,
     vozDesbloqueada: false,
+    pesoPendiente: null,
   };
 
   const $ = (id) => document.getElementById(id);
@@ -399,33 +400,75 @@
     if (el) el.classList.add("hidden");
   }
 
-  function asignarPesoMasPesado(sku, kgCrudo) {
+  function aplicarPesoMasPesado(sku, kgOk) {
     const item = encontrarSku(sku);
     if (!item) return null;
-    const kg = Number(String(kgCrudo ?? "").replace(",", "."));
-    const kgOk = Number.isFinite(kg) && kg > 0 ? Math.round(kg * 100) / 100 : 0;
-    const lbs = librasDesdeKg(kgOk);
-    const anterior = skuMasPesado();
-    const esOtro =
-      Boolean(anterior) && normalizarCodigo(anterior.sku) !== normalizarCodigo(item.sku);
-    const kgAnterior = esOtro ? Number(anterior.pesoKg) || 0 : 0;
-    const avisarMenor = kgOk > 0 && kgAnterior > 0 && kgOk < kgAnterior;
+    const kilos = Number.isFinite(kgOk) && kgOk > 0 ? Math.round(kgOk * 100) / 100 : 0;
+    const lbs = librasDesdeKg(kilos);
     (state.inventario.skus || []).forEach((row) => {
       const mismo = normalizarCodigo(row.sku) === normalizarCodigo(item.sku);
       if (mismo) {
-        row.masPesado = kgOk > 0;
-        row.pesoKg = kgOk;
+        row.masPesado = kilos > 0;
+        row.pesoKg = kilos;
         row.pesoLbs = lbs;
-      } else if (kgOk > 0) {
+      } else if (kilos > 0) {
         row.masPesado = false;
         row.pesoKg = 0;
         row.pesoLbs = 0;
       }
     });
     persistirInventario();
-    if (avisarMenor) mostrarAdvertenciaPesoMenor(kgOk, kgAnterior);
     deseleccionarSkuActivo();
     return item;
+  }
+
+  function confirmarPesoPendiente() {
+    const pend = state.pesoPendiente;
+    state.pesoPendiente = null;
+    cerrarAdvertenciaPeso();
+    if (!pend || !pend.sku) return;
+    aplicarPesoMasPesado(pend.sku, pend.kg);
+  }
+
+  function cancelarPesoPendiente() {
+    state.pesoPendiente = null;
+    cerrarAdvertenciaPeso();
+    const campo = $("peso-kg-input");
+    const item = skuActivoItem();
+    if (campo && document.activeElement !== campo) {
+      campo.value = item && Number(item.pesoKg) > 0 ? String(item.pesoKg) : "";
+    }
+    const lbs = $("peso-lbs-label");
+    if (lbs) {
+      const valor = item && Number(item.pesoLbs) > 0 ? Number(item.pesoLbs) : 0;
+      lbs.textContent = `${valor.toFixed(2)} lb`;
+    }
+    renderTabla();
+    renderContenedor();
+  }
+
+  function asignarPesoMasPesado(sku, kgCrudo) {
+    const item = encontrarSku(sku);
+    if (!item) return null;
+    const kg = Number(String(kgCrudo ?? "").replace(",", "."));
+    const kgOk = Number.isFinite(kg) && kg > 0 ? Math.round(kg * 100) / 100 : 0;
+    const anterior = skuMasPesado();
+    const esOtro =
+      Boolean(anterior) && normalizarCodigo(anterior.sku) !== normalizarCodigo(item.sku);
+    const kgAnterior = esOtro ? Number(anterior.pesoKg) || 0 : 0;
+    const avisarMenor = kgOk > 0 && kgAnterior > 0 && kgOk < kgAnterior;
+    if (avisarMenor) {
+      const mismoPendiente =
+        state.pesoPendiente &&
+        normalizarCodigo(state.pesoPendiente.sku) === normalizarCodigo(item.sku) &&
+        Number(state.pesoPendiente.kg) === kgOk;
+      state.pesoPendiente = { sku: item.sku, kg: kgOk, kgAnterior };
+      if (!mismoPendiente) mostrarAdvertenciaPesoMenor(kgOk, kgAnterior);
+      return item;
+    }
+    state.pesoPendiente = null;
+    cerrarAdvertenciaPeso();
+    return aplicarPesoMasPesado(item.sku, kgOk);
   }
 
   function flushPesoKgActivo() {
@@ -2572,8 +2615,10 @@
       btnLimpiarInventario.addEventListener("click", () => limpiarInventarioSesion());
     }
     $("sku-modal-close").addEventListener("click", () => $("sku-modal").classList.add("hidden"));
-    const pesoAlertaClose = $("peso-alerta-close");
-    if (pesoAlertaClose) pesoAlertaClose.addEventListener("click", () => cerrarAdvertenciaPeso());
+    const pesoAlertaSeguir = $("peso-alerta-seguir");
+    if (pesoAlertaSeguir) pesoAlertaSeguir.addEventListener("click", () => confirmarPesoPendiente());
+    const pesoAlertaCancelar = $("peso-alerta-cancelar");
+    if (pesoAlertaCancelar) pesoAlertaCancelar.addEventListener("click", () => cancelarPesoPendiente());
     $("complete-alert-close").addEventListener("click", () => mostrarCompleto(false));
     const btnWhatsappCierre = $("complete-alert-whatsapp");
     if (btnWhatsappCierre) {

@@ -1,26 +1,32 @@
-const CACHE = "al-lumper-v37";
+const APP_VERSION = "1.0.1";
+const CACHE_NAME = `al-cache-v${APP_VERSION}`;
 const PRECACHE = [
   "/",
   "/static/index.html",
-  "/static/styles.css",
-  "/static/config.js",
-  "/static/app.js",
+  `/static/styles.css?v=${APP_VERSION}`,
+  `/static/config.js?v=${APP_VERSION}`,
+  `/static/app.js?v=${APP_VERSION}`,
   "/static/manifest.json",
   "/static/icon.svg",
 ];
 
 self.addEventListener("install", (event) => {
-  event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(PRECACHE)));
+  event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(PRECACHE)));
   self.skipWaiting();
 });
 
 self.addEventListener("activate", (event) => {
   event.waitUntil(
-    caches.keys().then((keys) =>
-      Promise.all(keys.filter((key) => key !== CACHE).map((key) => caches.delete(key)))
-    )
+    (async () => {
+      const keys = await caches.keys();
+      await Promise.all(keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key)));
+      await self.clients.claim();
+    })()
   );
-  self.clients.claim();
+});
+
+self.addEventListener("message", (event) => {
+  if (event.data && event.data.type === "SKIP_WAITING") self.skipWaiting();
 });
 
 self.addEventListener("fetch", (event) => {
@@ -28,11 +34,18 @@ self.addEventListener("fetch", (event) => {
   if (url.pathname.startsWith("/api/")) {
     return;
   }
+  const revalidarSiempre =
+    event.request.mode === "navigate" ||
+    url.pathname === "/" ||
+    url.pathname.endsWith(".html") ||
+    url.pathname.endsWith("/sw.js");
   event.respondWith(
-    fetch(event.request)
+    fetch(event.request, revalidarSiempre ? { cache: "no-store" } : undefined)
       .then((response) => {
-        const copy = response.clone();
-        caches.open(CACHE).then((cache) => cache.put(event.request, copy));
+        if (!revalidarSiempre && response && response.ok) {
+          const copy = response.clone();
+          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
+        }
         return response;
       })
       .catch(() => caches.match(event.request).then((hit) => hit || caches.match("/")))

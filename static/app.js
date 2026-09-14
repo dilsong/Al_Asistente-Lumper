@@ -2680,9 +2680,7 @@
         detail:
           "Licencia Expirada o Inválida. Por favor contacte al desarrollador para renovar su servicio.",
       });
-      if ("serviceWorker" in navigator) {
-        navigator.serviceWorker.register("/static/sw.js").catch(() => {});
-      }
+      registrarServiceWorker();
       return;
     }
 
@@ -2745,9 +2743,18 @@
     persistirInventario();
     sincronizarCamposSesion();
 
-    if ("serviceWorker" in navigator) {
-      navigator.serviceWorker.register("/static/sw.js").catch(() => {});
-    }
+    registrarServiceWorker();
+  }
+
+  function registrarServiceWorker() {
+    if (!("serviceWorker" in navigator)) return;
+    navigator.serviceWorker
+      .register("/static/sw.js")
+      .then((reg) => {
+        if (reg.waiting) reg.waiting.postMessage({ type: "SKIP_WAITING" });
+        return reg.update();
+      })
+      .catch(() => {});
   }
 
   window.cerrarModalEstatus = cerrarModalEstatus;

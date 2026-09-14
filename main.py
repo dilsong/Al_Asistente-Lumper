@@ -20,9 +20,22 @@ from services.ocr_engine import inventario_demo, mensaje_carga, mensaje_fallo_le
 from services.paths import CSV_EXPORT_PATH, STATIC_DIR, ensure_data_dir
 from services.persistence import CsvFileStore, get_store
 
-app = FastAPI(title="AL - Asistente de Lumper", version="1.0.0")
+APP_VERSION = "1.0.1"
+NO_CACHE_HEADERS = {
+    "Cache-Control": "no-cache, must-revalidate",
+    "Pragma": "no-cache",
+}
+
+app = FastAPI(title="AL - Asistente de Lumper", version=APP_VERSION)
 ensure_data_dir()
 license_manager.ensure_license_file()
+
+
+def _debe_revalidar(path: str) -> bool:
+    if path == "/" or path.endswith(".html"):
+        return True
+    nombre = path.rsplit("/", 1)[-1]
+    return nombre in {"sw.js", "manifest.json"}
 
 RUTAS_LIBRES = {
     "/api/health",
@@ -89,9 +102,18 @@ async def licencia_middleware(request: Request, call_next):
     return await call_next(request)
 
 
+@app.middleware("http")
+async def no_cache_html_middleware(request: Request, call_next):
+    response = await call_next(request)
+    if _debe_revalidar(request.url.path):
+        response.headers["Cache-Control"] = NO_CACHE_HEADERS["Cache-Control"]
+        response.headers["Pragma"] = NO_CACHE_HEADERS["Pragma"]
+    return response
+
+
 @app.get("/api/health")
 def health() -> dict[str, Any]:
-    return {"ok": True, "app": "AL", "version": "1.0.0"}
+    return {"ok": True, "app": "AL", "version": APP_VERSION}
 
 
 @app.get("/api/license")
@@ -256,7 +278,16 @@ def put_chat(body: ChatSyncBody) -> dict[str, Any]:
 
 @app.get("/")
 def root() -> FileResponse:
-    return FileResponse(STATIC_DIR / "index.html")
+    return FileResponse(STATIC_DIR / "index.html", headers=NO_CACHE_HEADERS)
+
+
+@app.get("/static/sw.js")
+def service_worker() -> FileResponse:
+    return FileResponse(
+        STATIC_DIR / "sw.js",
+        media_type="application/javascript",
+        headers=NO_CACHE_HEADERS,
+    )
 
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")

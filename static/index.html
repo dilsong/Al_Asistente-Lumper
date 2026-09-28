@@ -22,7 +22,7 @@
         },
       };
     </script>
-    <link rel="stylesheet" href="/static/styles.css?v=1.0.1" />
+    <link rel="stylesheet" href="/static/styles.css?v=1.0.3" />
     <style>
       .count-field {
         justify-content: flex-end !important;
@@ -194,119 +194,180 @@
     </header>
 
     <main id="app-workspace">
-    <section class="session-meta" aria-label="Datos de sesión">
-      <label class="session-meta-field" for="operador-input">
-        <span>Operador</span>
-        <input id="operador-input" type="text" autocomplete="name" placeholder="Nombre del operador" />
-      </label>
-      <label class="session-meta-field" for="puerta-input">
-        <span>Número de puerta</span>
-        <input id="puerta-input" type="text" inputmode="text" autocomplete="off" placeholder="Ej. Puerta 5" />
-      </label>
-    </section>
-    <section class="kpi-grid" aria-label="Indicadores de avance">
-      <article class="kpi-card">
-        <p>Cajas pendientes</p>
-        <strong id="kpi-cajas">0</strong>
-      </article>
-      <article class="kpi-card">
-        <p>SKUs pendientes</p>
-        <strong id="kpi-skus">0</strong>
-      </article>
-      <article class="kpi-card">
-        <p>% de avance</p>
-        <strong id="kpi-avance">0%</strong>
-      </article>
-    </section>
+    <nav id="block-nav" class="block-nav" aria-label="Navegación de bloques">
+      <button type="button" class="block-nav-btn" data-bloque="A" aria-current="false">A</button>
+      <button type="button" class="block-nav-btn is-active" data-bloque="B" aria-current="true">B</button>
+      <button type="button" class="block-nav-btn" data-bloque="C" aria-current="false">C</button>
+      <button type="button" class="block-nav-btn" data-bloque="D" aria-current="false">D</button>
+      <button type="button" class="block-nav-btn" data-bloque="E" aria-current="false">E</button>
+    </nav>
 
-    <section class="action-stack" aria-label="Acciones de hoja">
-      <div class="toolbar toolbar-row toolbar-capture">
-        <label class="btn-primary file-btn file-btn-main">
-          📷 Tomar Foto
-          <input id="file-input-camera" type="file" accept="image/*" capture="environment" hidden />
-        </label>
-        <label class="btn-secondary file-btn">
-          📁 Cargar Imagen
-          <input id="file-input-gallery" type="file" accept="image/*" hidden />
-        </label>
-        <button type="button" id="btn-sumar-hoja" class="btn-secondary">📄 Sumar Siguiente Hoja</button>
-      </div>
-      <div class="toolbar toolbar-row toolbar-control">
-        <button type="button" id="btn-cerrar-contenedor" class="btn-secondary">🚚 Cerrar Contenedor</button>
-        <button type="button" id="btn-historial" class="btn-secondary">📋 Ver Historial</button>
-        <button type="button" id="btn-estatus" class="btn-estatus" title="Consultar estatus del contenedor">ESTATUS</button>
-      </div>
-    </section>
+    <div id="blocks-container" class="blocks-container blocks-pending">
+      <section id="bloque-a" class="bloque" data-bloque="A" aria-label="Bloque A sesión">
+        <section class="session-meta" aria-label="Datos de sesión">
+          <label class="session-meta-field" for="operador-input">
+            <span>Operador</span>
+            <input id="operador-input" type="text" autocomplete="name" placeholder="Nombre del operador" />
+          </label>
+          <label class="session-meta-field" for="puerta-input">
+            <span>Número de puerta</span>
+            <input id="puerta-input" type="text" inputmode="text" autocomplete="off" placeholder="Ej. Puerta 5" />
+          </label>
+        </section>
+        <section class="kpi-grid" aria-label="Indicadores de avance">
+          <article class="kpi-card">
+            <p>Cajas pendientes</p>
+            <strong id="kpi-cajas">0</strong>
+          </article>
+          <article class="kpi-card">
+            <p>SKUs pendientes</p>
+            <strong id="kpi-skus">0</strong>
+          </article>
+          <article class="kpi-card">
+            <p>% de avance</p>
+            <strong id="kpi-avance">0%</strong>
+          </article>
+        </section>
+        <section class="action-stack" aria-label="Acciones de hoja">
+          <div class="toolbar toolbar-row toolbar-capture">
+            <label class="btn-primary file-btn file-btn-main">
+              📷 Tomar Foto
+              <input id="file-input-camera" type="file" accept="image/*" capture="environment" hidden />
+            </label>
+            <label class="btn-secondary file-btn">
+              📁 Cargar Imagen
+              <input id="file-input-gallery" type="file" accept="image/*" hidden />
+            </label>
+            <button type="button" id="btn-sumar-hoja" class="btn-secondary">📄 Sumar Siguiente Hoja</button>
+          </div>
+        </section>
+      </section>
 
-    <section class="panel count-panel" aria-label="Conteo táctil">
-      <div class="panel-head">
-        <div>
-          <p class="kicker">SKU activo</p>
-          <h2 id="count-sku-label">Seleccione un SKU en la tabla</h2>
-        </div>
-        <span id="count-sku-meta" class="muted">0 / 0</span>
-      </div>
-      <p id="pallet-breakdown" class="pallet-breakdown">0 / 0 cajas</p>
-      <p id="alerta-sku" class="sku-alert hidden" role="alert">Por favor, selecciona un SKU primero</p>
-      <div class="count-field">
-        <label class="count-field-label" for="paleta-input">Cajas por paleta</label>
-        <input id="paleta-input" class="paleta-input" type="number" inputmode="numeric" min="0" step="1" value="0" />
-      </div>
-      <div class="count-field">
-        <label class="count-field-label" for="peso-kg-input">Más pesado (kg)</label>
-        <input id="peso-kg-input" class="peso-input" type="number" inputmode="decimal" min="0" step="0.01" value="" placeholder="kg" />
-      </div>
-      <p id="peso-lbs-label" class="peso-lbs-label">0.00 lb</p>
-      <div class="count-field">
-        <label class="count-field-label" for="cajas-input">Cajas a procesar</label>
-        <input id="cajas-input" class="count-input" type="number" inputmode="numeric" min="0" step="1" value="0" />
-      </div>
-      <div class="count-actions">
-        <button type="button" id="btn-sumar-cajas" class="btn-primary btn-count">SUMAR CAJAS</button>
-        <button type="button" id="btn-fijar-cajas" class="btn-secondary btn-count">FIJAR</button>
-      </div>
-    </section>
+      <section id="bloque-b" class="bloque" data-bloque="B" aria-label="Bloque B conteo">
+        <section class="panel count-panel" aria-label="Conteo táctil">
+          <div class="panel-head">
+            <div>
+              <p class="kicker">SKU activo</p>
+              <h2 id="count-sku-label">Seleccione un SKU en la tabla</h2>
+            </div>
+            <span id="count-sku-meta" class="muted">0 / 0</span>
+          </div>
+          <p id="pallet-breakdown" class="pallet-breakdown">0 / 0 cajas</p>
+          <p id="alerta-sku" class="sku-alert hidden" role="alert">Por favor, selecciona un SKU primero</p>
+          <div class="count-field">
+            <label class="count-field-label" for="paleta-input">Cajas por paleta</label>
+            <input id="paleta-input" class="paleta-input" type="number" inputmode="numeric" min="0" step="1" value="0" />
+          </div>
+          <div class="count-field">
+            <label class="count-field-label" for="peso-kg-input">Más pesado (kg)</label>
+            <input id="peso-kg-input" class="peso-input" type="number" inputmode="decimal" min="0" step="0.01" value="" placeholder="kg" />
+          </div>
+          <p id="peso-lbs-label" class="peso-lbs-label">0.00 lb</p>
+          <div class="count-field">
+            <label class="count-field-label" for="cajas-input">Cajas a procesar</label>
+            <input id="cajas-input" class="count-input" type="number" inputmode="numeric" min="0" step="1" value="0" />
+          </div>
+          <div class="count-actions">
+            <button type="button" id="btn-sumar-cajas" class="btn-primary btn-count">SUMAR CAJAS</button>
+            <button type="button" id="btn-fijar-cajas" class="btn-secondary btn-count">FIJAR</button>
+          </div>
+        </section>
+      </section>
 
-    <section class="panel" id="inventario-panel">
-      <div class="panel-head inventario-head">
-        <h2>Inventario de sesión</h2>
-        <div class="inventario-head-actions">
-          <input id="tabla-filtro" class="filter-input" type="text" inputmode="text" autocomplete="off" spellcheck="false" placeholder="Filtrar SKU… (ej. 027)" />
-          <button type="button" id="btn-limpiar-inventario" class="btn-ghost">🧹 Limpiar inventario</button>
-        </div>
-      </div>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>SKU</th>
-              <th>Esp.</th>
-              <th>Cnt</th>
-              <th>Estado</th>
-            </tr>
-          </thead>
-          <tbody id="tabla-skus">
-            <tr>
-              <td colspan="4" class="empty">Escanee o cargue la foto de la hoja de papel.</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </section>
+      <section id="bloque-c" class="bloque" data-bloque="C" aria-label="Bloque C inventario">
+        <section class="panel" id="inventario-panel">
+          <div class="panel-head inventario-head">
+            <h2>Inventario de sesión</h2>
+            <div class="inventario-head-actions">
+              <input id="tabla-filtro" class="filter-input" type="text" inputmode="text" autocomplete="off" spellcheck="false" placeholder="Filtrar SKU… (ej. 027)" />
+              <button type="button" id="btn-limpiar-inventario" class="btn-ghost">🧹 Limpiar inventario</button>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>SKU</th>
+                  <th>Esp.</th>
+                  <th>Cnt</th>
+                  <th>Estado</th>
+                </tr>
+              </thead>
+              <tbody id="tabla-skus">
+                <tr>
+                  <td colspan="4" class="empty">Escanee o cargue la foto de la hoja de papel.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </section>
 
-    <section class="panel chat-panel">
-      <details id="chat-expander" class="chat-expander">
-        <summary class="chat-summary">
-          <span class="chat-summary-title">Registro de voz</span>
-          <span id="wake-hint" class="muted">Di “Oye AL”</span>
-          <span class="chat-chevron" aria-hidden="true">▾</span>
-        </summary>
-        <div id="chat-log" class="chat-log" aria-live="polite"></div>
-        <div class="chat-actions">
-          <button type="button" id="btn-limpiar-chat" class="btn-ghost btn-limpiar-chat">Limpiar registro</button>
-        </div>
-      </details>
-    </section>
+      <section id="bloque-d" class="bloque" data-bloque="D" aria-label="Bloque D paletización">
+        <section class="panel paletizacion-panel" aria-label="Paletización">
+          <h2 id="paletizacion-titulo" class="paletizacion-titulo">PALETIZACIÓN</h2>
+          <p id="paletizacion-sku" class="paletizacion-sku">Selecciona un SKU</p>
+          <p id="paletizacion-aviso" class="paletizacion-aviso hidden"></p>
+          <div id="paletizacion-matriz" class="paletizacion-matriz hidden">
+            <div class="paletizacion-grid paletizacion-cabecera">
+              <span></span>
+              <span>YA ARMADAS</span>
+              <span>TOTAL</span>
+              <span>FALTAN</span>
+              <span></span>
+              <strong id="pal-top-armadas">0</strong>
+              <strong id="pal-top-total">0</strong>
+              <strong id="pal-top-faltan">0</strong>
+            </div>
+            <p class="paletizacion-seccion">COMPLETAS</p>
+            <div class="paletizacion-grid">
+              <span>Paletas</span>
+              <strong id="pal-comp-armadas-p">0</strong>
+              <strong id="pal-comp-total-p">0</strong>
+              <strong id="pal-comp-faltan-p">0</strong>
+              <span>Cajas</span>
+              <strong id="pal-comp-armadas-c">0</strong>
+              <strong id="pal-comp-total-c">0</strong>
+              <strong id="pal-comp-faltan-c">0</strong>
+            </div>
+            <p class="paletizacion-seccion">PARCIALES</p>
+            <div class="paletizacion-grid">
+              <span>Paletas</span>
+              <strong id="pal-par-armadas-p">0</strong>
+              <strong id="pal-par-total-p">0</strong>
+              <strong id="pal-par-faltan-p">0</strong>
+              <span>Cajas</span>
+              <strong id="pal-par-armadas-c">0</strong>
+              <strong id="pal-par-total-c">0</strong>
+              <strong id="pal-par-faltan-c">0</strong>
+            </div>
+          </div>
+        </section>
+      </section>
+
+      <section id="bloque-e" class="bloque" data-bloque="E" aria-label="Bloque E jornada">
+        <section class="action-stack" aria-label="Acciones de jornada">
+          <div class="toolbar toolbar-row toolbar-control">
+            <button type="button" id="btn-cerrar-contenedor" class="btn-secondary">🚚 Cerrar Contenedor</button>
+            <button type="button" id="btn-historial" class="btn-secondary">📋 Ver Historial</button>
+            <button type="button" id="btn-estatus" class="btn-estatus" title="Consultar estatus del contenedor">ESTATUS</button>
+          </div>
+        </section>
+        <section class="panel chat-panel">
+          <details id="chat-expander" class="chat-expander">
+            <summary class="chat-summary">
+              <span class="chat-summary-title">Registro de voz</span>
+              <span id="wake-hint" class="muted">Di “Oye AL”</span>
+              <span class="chat-chevron" aria-hidden="true">▾</span>
+            </summary>
+            <div id="chat-log" class="chat-log" aria-live="polite"></div>
+            <div class="chat-actions">
+              <button type="button" id="btn-limpiar-chat" class="btn-ghost btn-limpiar-chat">Limpiar registro</button>
+            </div>
+          </details>
+        </section>
+      </section>
+    </div>
 
     <div id="live-transcript" class="live-transcript hidden" aria-live="polite">
       <span class="live-kicker">Mic</span>
@@ -338,6 +399,6 @@
     </div>
 
     <script src="/static/config.js?v=1.0.1"></script>
-    <script src="/static/app.js?v=1.0.1"></script>
+    <script src="/static/app.js?v=1.0.3"></script>
   </body>
 </html>

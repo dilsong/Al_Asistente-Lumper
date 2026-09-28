@@ -133,6 +133,8 @@
     ultimoCierre: null,
     vozDesbloqueada: false,
     pesoPendiente: null,
+    bloqueActivo: "B",
+    ultimoSkuPaletizacion: null,
   };
 
   const $ = (id) => document.getElementById(id);
@@ -987,6 +989,7 @@
     state.inventario = inventarioVacio();
     state.inventario.operador = operador;
     state.skuActivo = null;
+    state.ultimoSkuPaletizacion = null;
     state.skuReservadoConteo = null;
     state.skuReservadoEn = 0;
     state.filtro = "";
@@ -1362,6 +1365,9 @@
     state.inventario = destino;
     const existe = skuActivo && encontrarSku(skuActivo);
     state.skuActivo = existe ? existe.sku : null;
+    if (state.ultimoSkuPaletizacion && !encontrarSku(state.ultimoSkuPaletizacion)) {
+      state.ultimoSkuPaletizacion = null;
+    }
     state.kpis = calcularKpis(destino);
     state.cierreRegistrado = false;
     state.modoSumarHoja = false;
@@ -1642,6 +1648,9 @@
     if (payload.inventario) state.inventario = asegurarHojas(payload.inventario);
     if (!state.inventario.operador) state.inventario.operador = operador;
     if (!state.inventario.puerta) state.inventario.puerta = puerta;
+    if (state.ultimoSkuPaletizacion && !encontrarSku(state.ultimoSkuPaletizacion)) {
+      state.ultimoSkuPaletizacion = null;
+    }
     (state.inventario.skus || []).forEach(recalcularSku);
     enforceUnicoMasPesado(state.inventario);
     state.kpis = payload.kpis || calcularKpis(state.inventario);
@@ -1675,10 +1684,10 @@
     const panel = $("inventario-panel");
     if (panel) {
       panel.classList.add("needs-sku");
-      panel.scrollIntoView({ behavior: "smooth", block: "center" });
     }
     desbloquearVozIos();
     responder(aviso);
+    irABloque("C");
   }
 
   function desglosePaletas(item) {
@@ -1708,6 +1717,65 @@
       ? `Llevas ${completas} paletas completas y 1 parcial de ${parcial} cajas para este producto.`
       : `Llevas ${completas} paletas completas y ninguna parcial para este producto.`;
     return { texto, voz, factor, completas, parcial };
+  }
+
+  function desgloseVacio(cajasTotal) {
+    return {
+      valido: false,
+      factor: 0,
+      completas: { paletas: 0, cajas: 0 },
+      parciales: { paletas: 0, cajas: 0 },
+      paletasTotal: 0,
+      cajasTotal: enteroNoNegativo(cajasTotal),
+    };
+  }
+
+  function calcularDesgloseCantidad(cantidad, factor) {
+    const cajas = enteroNoNegativo(cantidad);
+    const cap = enteroNoNegativo(factor);
+    if (cap <= 0) return desgloseVacio(cajas);
+    const paletasCompletas = Math.floor(cajas / cap);
+    const resto = cajas % cap;
+    const paletasParciales = resto > 0 ? 1 : 0;
+    return {
+      valido: true,
+      factor: cap,
+      completas: { paletas: paletasCompletas, cajas: paletasCompletas * cap },
+      parciales: { paletas: paletasParciales, cajas: resto },
+      paletasTotal: paletasCompletas + paletasParciales,
+      cajasTotal: cajas,
+    };
+  }
+
+  function calcularPaletizacionSku(item) {
+    const esperado = enteroNoNegativo(item && item.cantidad_esperada);
+    const contador = enteroNoNegativo(item && item.contador);
+    const factor = enteroNoNegativo(item && item.cajas_por_paleta);
+    const faltantes = Math.max(0, esperado - contador);
+    if (!item || factor <= 0) {
+      return {
+        valido: false,
+        sku: textoSku(item && item.sku),
+        factor: 0,
+        cajasArmadas: contador,
+        cajasEsperadas: esperado,
+        cajasFaltan: faltantes,
+        yaArmadas: desgloseVacio(contador),
+        total: desgloseVacio(esperado),
+        faltan: desgloseVacio(faltantes),
+      };
+    }
+    return {
+      valido: true,
+      sku: textoSku(item.sku),
+      factor,
+      cajasArmadas: contador,
+      cajasEsperadas: esperado,
+      cajasFaltan: faltantes,
+      yaArmadas: calcularDesgloseCantidad(contador, factor),
+      total: calcularDesgloseCantidad(esperado, factor),
+      faltan: calcularDesgloseCantidad(faltantes, factor),
+    };
   }
 
   function renderContenedor() {
@@ -1751,6 +1819,66 @@
       pesoLbs.textContent = `${lbs.toFixed(2)} lb`;
     }
     sincronizarCamposSesion();
+    renderPaletizacionBloqueD();
+  }
+
+  function pintarCeldaPaletizacion(id, valor) {
+    const el = $(id);
+    if (el) el.textContent = String(valor);
+  }
+
+  function itemPaletizacionD() {
+    const codigo = textoSku(state.skuActivo) || textoSku(state.ultimoSkuPaletizacion);
+    if (!codigo) return null;
+    return encontrarSku(codigo);
+  }
+
+  function renderPaletizacionBloqueD() {
+    const skuEl = $("paletizacion-sku");
+    const aviso = $("paletizacion-aviso");
+    const matriz = $("paletizacion-matriz");
+    if (!skuEl || !aviso || !matriz) return;
+
+    const item = itemPaletizacionD();
+    if (!item) {
+      skuEl.textContent = "Selecciona un SKU";
+      aviso.textContent = "";
+      aviso.classList.add("hidden");
+      matriz.classList.add("hidden");
+      return;
+    }
+
+    skuEl.textContent = textoSku(item.sku);
+    const data = calcularPaletizacionSku(item);
+    if (!data.valido) {
+      aviso.textContent = "Define cajas por paleta en B";
+      aviso.classList.remove("hidden");
+      matriz.classList.add("hidden");
+      return;
+    }
+
+    aviso.textContent = "";
+    aviso.classList.add("hidden");
+    matriz.classList.remove("hidden");
+
+    const faltanFisicas = Math.max(0, data.total.paletasTotal - data.yaArmadas.paletasTotal);
+    pintarCeldaPaletizacion("pal-top-armadas", data.yaArmadas.paletasTotal);
+    pintarCeldaPaletizacion("pal-top-total", data.total.paletasTotal);
+    pintarCeldaPaletizacion("pal-top-faltan", faltanFisicas);
+
+    pintarCeldaPaletizacion("pal-comp-armadas-p", data.yaArmadas.completas.paletas);
+    pintarCeldaPaletizacion("pal-comp-total-p", data.total.completas.paletas);
+    pintarCeldaPaletizacion("pal-comp-faltan-p", data.faltan.completas.paletas);
+    pintarCeldaPaletizacion("pal-comp-armadas-c", data.yaArmadas.completas.cajas);
+    pintarCeldaPaletizacion("pal-comp-total-c", data.total.completas.cajas);
+    pintarCeldaPaletizacion("pal-comp-faltan-c", data.faltan.completas.cajas);
+
+    pintarCeldaPaletizacion("pal-par-armadas-p", data.yaArmadas.parciales.paletas);
+    pintarCeldaPaletizacion("pal-par-total-p", data.total.parciales.paletas);
+    pintarCeldaPaletizacion("pal-par-faltan-p", data.faltan.parciales.paletas);
+    pintarCeldaPaletizacion("pal-par-armadas-c", data.yaArmadas.parciales.cajas);
+    pintarCeldaPaletizacion("pal-par-total-c", data.total.parciales.cajas);
+    pintarCeldaPaletizacion("pal-par-faltan-c", data.faltan.parciales.cajas);
   }
 
   function renderKpis() {
@@ -1910,6 +2038,7 @@
   function seleccionarSku(sku, anunciar = false) {
     const skuCompleto = textoSku(sku);
     state.skuActivo = skuCompleto;
+    if (skuCompleto) state.ultimoSkuPaletizacion = skuCompleto;
     persistirInventario();
     const panel = $("inventario-panel");
     if (panel) panel.classList.remove("needs-sku");
@@ -1938,6 +2067,7 @@
       : `SKU ${skuCompleto} seleccionado.`;
     pushChat("al", enPantalla, { evento: "sku_click", sku: skuCompleto });
     hablar(`Seleccionado SKU ${skuCorto}`);
+    irABloque("B");
   }
 
   function mostrarCoincidencias(resultado) {
@@ -2671,6 +2801,80 @@
     if (settingsClose) settingsClose.addEventListener("click", cerrarAjustesComandos);
     const settingsSave = $("settings-save");
     if (settingsSave) settingsSave.addEventListener("click", guardarComandosVoz);
+    enlazarNavegacionBloques();
+  }
+
+  const BLOQUES = ["A", "B", "C", "D", "E"];
+
+  function idBloque(letra) {
+    return `bloque-${String(letra || "").toLowerCase()}`;
+  }
+
+  function pintarNavBloques(letra) {
+    const activo = letra || state.bloqueActivo || "B";
+    document.querySelectorAll("#block-nav [data-bloque]").forEach((btn) => {
+      const on = btn.dataset.bloque === activo;
+      btn.classList.toggle("is-active", on);
+      btn.setAttribute("aria-current", on ? "true" : "false");
+    });
+  }
+
+  function letraDesdeScroll() {
+    const scroller = $("blocks-container");
+    if (!scroller) return state.bloqueActivo || "B";
+    const ancho = scroller.clientWidth || 1;
+    const idx = Math.round(scroller.scrollLeft / ancho);
+    return BLOQUES[Math.max(0, Math.min(BLOQUES.length - 1, idx))] || "B";
+  }
+
+  function irABloque(letra, opciones) {
+    const key = String(letra || "").toUpperCase();
+    const bloque = $(idBloque(key));
+    const scroller = $("blocks-container");
+    if (!BLOQUES.includes(key) || !bloque || !scroller) return;
+    state.bloqueActivo = key;
+    pintarNavBloques(key);
+    const instant = Boolean(opciones && opciones.instant);
+    const idx = BLOQUES.indexOf(key);
+    const left = Math.max(0, idx * (scroller.clientWidth || 0));
+    scroller.scrollTo({
+      left,
+      behavior: instant ? "auto" : "smooth",
+    });
+    scroller.classList.remove("blocks-pending");
+  }
+
+  function enlazarNavegacionBloques() {
+    const nav = $("block-nav");
+    const scroller = $("blocks-container");
+    if (nav) {
+      nav.querySelectorAll("[data-bloque]").forEach((btn) => {
+        btn.addEventListener("click", () => irABloque(btn.dataset.bloque));
+      });
+    }
+    if (scroller) {
+      let ticking = false;
+      scroller.addEventListener(
+        "scroll",
+        () => {
+          if (ticking) return;
+          ticking = true;
+          window.requestAnimationFrame(() => {
+            ticking = false;
+            const letra = letraDesdeScroll();
+            if (letra !== state.bloqueActivo) {
+              state.bloqueActivo = letra;
+              pintarNavBloques(letra);
+            }
+          });
+        },
+        { passive: true }
+      );
+    }
+    irABloque("B", { instant: true });
+    window.addEventListener("resize", () => {
+      if (state.bloqueActivo) irABloque(state.bloqueActivo, { instant: true });
+    });
   }
 
   async function iniciar() {
@@ -2742,6 +2946,7 @@
     if (state.inventario.puerta == null) state.inventario.puerta = "";
     persistirInventario();
     sincronizarCamposSesion();
+    irABloque("B", { instant: true });
 
     registrarServiceWorker();
   }

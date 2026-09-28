@@ -28,6 +28,149 @@ body {
   padding: 12px 12px calc(168px + var(--safe-bottom));
 }
 
+#app-workspace.hidden {
+  display: none;
+}
+
+.block-nav {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 8px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+}
+
+.block-nav-btn {
+  min-height: 48px;
+  border: 0;
+  border-radius: 12px;
+  background: #0b1220;
+  color: var(--muted);
+  font-size: 1.05rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+
+.block-nav-btn.is-active {
+  background: var(--amber);
+  color: #111827;
+}
+
+.blocks-container {
+  display: flex;
+  width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scroll-snap-type: x mandatory;
+  scroll-behavior: smooth;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+}
+
+.blocks-container::-webkit-scrollbar {
+  display: none;
+}
+
+.blocks-container.blocks-pending {
+  visibility: hidden;
+}
+
+.bloque {
+  flex: 0 0 100%;
+  width: 100%;
+  min-width: 100%;
+  max-width: 100%;
+  scroll-snap-align: start;
+  scroll-snap-stop: always;
+  overflow-x: hidden;
+}
+
+.paletizacion-panel {
+  padding: 16px 12px 18px;
+}
+
+.paletizacion-titulo {
+  margin: 0;
+  text-align: center;
+  font-size: 1.15rem;
+  letter-spacing: 0.06em;
+}
+
+.paletizacion-sku {
+  margin: 8px 0 16px;
+  text-align: center;
+  color: var(--amber);
+  font-size: 1.35rem;
+  font-weight: 800;
+  word-break: break-all;
+}
+
+.paletizacion-aviso {
+  margin: 0;
+  text-align: center;
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.paletizacion-aviso.hidden,
+.paletizacion-matriz.hidden {
+  display: none;
+}
+
+.paletizacion-matriz {
+  overflow-x: hidden;
+  width: 100%;
+}
+
+.paletizacion-seccion {
+  margin: 16px 0 8px;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+}
+
+.paletizacion-grid {
+  display: grid;
+  grid-template-columns: minmax(72px, 1.15fr) repeat(3, minmax(0, 1fr));
+  gap: 8px 6px;
+  align-items: center;
+  width: 100%;
+}
+
+.paletizacion-grid > span:first-child,
+.paletizacion-grid > span:nth-child(5) {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.paletizacion-cabecera span {
+  color: var(--muted);
+  font-size: 0.62rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  text-align: center;
+  line-height: 1.2;
+}
+
+.paletizacion-grid strong {
+  display: block;
+  text-align: center;
+  font-size: 1.45rem;
+  font-weight: 900;
+  line-height: 1.1;
+}
+
+.paletizacion-cabecera strong {
+  color: var(--amber);
+  font-size: 1.7rem;
+}
+
 .topbar,
 .panel,
 .kpi-card,

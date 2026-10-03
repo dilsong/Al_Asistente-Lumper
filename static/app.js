@@ -2325,9 +2325,7 @@
     flushPesoKgActivo();
     setCajasCampo(cantidad);
     const data = aplicarConteoLocal(objetivo, cantidad, modo);
-    state.skuActivo = null;
     aplicarSesion(data);
-    deseleccionarSkuActivo();
     mostrarAlertaSku(false);
     await responder(data.mensaje, { sku: data.sku.sku, modo });
   }
@@ -2370,7 +2368,6 @@
       return;
     }
     const info = desglosePaletas(item);
-    deseleccionarSkuActivo();
     await responder(info.voz, { sku: item.sku, evento: "paletas" });
   }
 

@@ -119,6 +119,7 @@
     skuReservadoConteo: null,
     skuReservadoEn: 0,
     filtro: "",
+    filtroEstadoSku: "todos",
     listening: false,
     commandArmed: false,
     recognition: null,
@@ -420,7 +421,8 @@
       }
     });
     persistirInventario();
-    deseleccionarSkuActivo();
+    renderTabla();
+    renderContenedor();
     return item;
   }
 
@@ -993,12 +995,14 @@
     state.skuReservadoConteo = null;
     state.skuReservadoEn = 0;
     state.filtro = "";
+    state.filtroEstadoSku = "todos";
     state.cierreRegistrado = false;
     state.modoSumarHoja = false;
     state.kpis = calcularKpis(state.inventario);
     persistirInventario();
     const filtro = $("tabla-filtro");
     if (filtro) filtro.value = "";
+    pintarFiltroEstadoSku();
     setCajasCampo(0);
     const paleta = $("paleta-input");
     if (paleta) paleta.value = "0";
@@ -1123,6 +1127,112 @@
   function encontrarSku(sku) {
     const objetivo = normalizarCodigo(sku);
     return (state.inventario.skus || []).find((item) => normalizarCodigo(item.sku) === objetivo) || null;
+  }
+
+  function inventarioSesionActivo() {
+    const data = state.inventario || inventarioVacio();
+    return hojasDelContenedor(data) > 0 || (data.skus || []).length > 0 || Boolean(textoSku(data.contenedor));
+  }
+
+  function mostrarErrorSkuManual(texto) {
+    const el = $("sku-manual-error");
+    if (!el) return;
+    if (texto) {
+      el.textContent = texto;
+      el.classList.remove("hidden");
+    } else {
+      el.textContent = "";
+      el.classList.add("hidden");
+    }
+  }
+
+  function abrirModalSkuManual() {
+    if (!inventarioSesionActivo()) {
+      responder("Primero carga una hoja de trabajo.");
+      return;
+    }
+    mostrarErrorSkuManual("");
+    const codigo = $("sku-manual-codigo");
+    const cajas = $("sku-manual-cajas");
+    if (codigo) codigo.value = "";
+    if (cajas) cajas.value = "";
+    const modal = $("sku-manual-modal");
+    if (modal) modal.classList.remove("hidden");
+    if (codigo) codigo.focus();
+  }
+
+  function cerrarModalSkuManual() {
+    const activo = document.activeElement;
+    if (activo && typeof activo.blur === "function") activo.blur();
+    mostrarErrorSkuManual("");
+    const codigo = $("sku-manual-codigo");
+    const cajas = $("sku-manual-cajas");
+    if (codigo) codigo.value = "";
+    if (cajas) cajas.value = "";
+    const modal = $("sku-manual-modal");
+    if (modal) modal.classList.add("hidden");
+  }
+
+  function agregarSkuManual() {
+    if (!inventarioSesionActivo()) {
+      const aviso = "Primero carga una hoja de trabajo.";
+      mostrarErrorSkuManual(aviso);
+      responder(aviso);
+      return;
+    }
+    const sku = textoSku($("sku-manual-codigo") && $("sku-manual-codigo").value);
+    if (!sku) {
+      const aviso = "Indica el SKU.";
+      mostrarErrorSkuManual(aviso);
+      responder(aviso);
+      return;
+    }
+    const cajasCrudo = String(($("sku-manual-cajas") && $("sku-manual-cajas").value) || "").trim();
+    if (!cajasCrudo) {
+      const aviso = "Indica un número de cajas mayor que 0.";
+      mostrarErrorSkuManual(aviso);
+      responder(aviso);
+      return;
+    }
+    const cajas = Number(cajasCrudo.replace(",", "."));
+    if (!Number.isFinite(cajas) || cajas <= 0 || !Number.isInteger(cajas)) {
+      const aviso = "Indica un número de cajas mayor que 0.";
+      mostrarErrorSkuManual(aviso);
+      responder(aviso);
+      return;
+    }
+    if (encontrarSku(sku)) {
+      const aviso = "Este SKU ya está registrado en el inventario.";
+      mostrarErrorSkuManual(aviso);
+      responder(aviso);
+      return;
+    }
+    if (!state.inventario) state.inventario = inventarioVacio();
+    if (!Array.isArray(state.inventario.skus)) state.inventario.skus = [];
+    const item = recalcularSku({
+      sku,
+      producto: "",
+      cantidad_esperada: cajas,
+      contador: 0,
+      cajas_por_paleta: 0,
+      masPesado: false,
+      pesoKg: 0,
+      pesoLbs: 0,
+    });
+    state.inventario.skus.push(item);
+    state.filtro = "";
+    state.filtroEstadoSku = "todos";
+    const filtro = $("tabla-filtro");
+    if (filtro) filtro.value = "";
+    pintarFiltroEstadoSku();
+    state.kpis = calcularKpis(state.inventario);
+    persistirInventario();
+    renderKpis();
+    renderTabla();
+    renderContenedor();
+    cerrarModalSkuManual();
+    irABloque("B");
+    responder(`SKU ${item.sku} agregado. ${item.cantidad_esperada} cajas pendientes.`);
   }
 
   function buscarPorSufijoLocal(dictado) {
@@ -1363,6 +1473,7 @@
     if (!destino.operador) destino.operador = operadorPrev;
     if (!destino.puerta) destino.puerta = puertaPrev;
     state.inventario = destino;
+    if (!acumular) state.filtroEstadoSku = "todos";
     const existe = skuActivo && encontrarSku(skuActivo);
     state.skuActivo = existe ? existe.sku : null;
     if (state.ultimoSkuPaletizacion && !encontrarSku(state.ultimoSkuPaletizacion)) {
@@ -1687,7 +1798,7 @@
     }
     desbloquearVozIos();
     responder(aviso);
-    irABloque("C");
+    irABloque("B");
   }
 
   function desglosePaletas(item) {
@@ -1895,12 +2006,49 @@
     return "Pendiente";
   }
 
+  function coincideFiltroEstadoSku(item) {
+    const filtro = state.filtroEstadoSku || "todos";
+    if (filtro === "todos") return true;
+    const estado = item && item.estado;
+    if (filtro === "pendiente") return estado === "pendiente";
+    if (filtro === "en_proceso") return estado === "en_proceso";
+    if (filtro === "finalizado") return estado === "completado" || estado === "exceso";
+    return true;
+  }
+
+  function mensajeTablaSkuVacia() {
+    const filtro = state.filtroEstadoSku || "todos";
+    if (filtro === "pendiente") return "No hay SKU pendientes.";
+    if (filtro === "en_proceso") return "No hay SKU en proceso.";
+    if (filtro === "finalizado") return "No hay SKU finalizados.";
+    return "Sin SKUs para mostrar.";
+  }
+
+  function pintarFiltroEstadoSku() {
+    const activo = state.filtroEstadoSku || "todos";
+    document.querySelectorAll("#filtro-estado-sku [data-estado]").forEach((btn) => {
+      const on = btn.dataset.estado === activo;
+      btn.classList.toggle("is-active", on);
+      btn.setAttribute("aria-pressed", on ? "true" : "false");
+    });
+  }
+
+  function aplicarFiltroEstadoSku(valor) {
+    const permitido = { todos: true, pendiente: true, en_proceso: true, finalizado: true };
+    state.filtroEstadoSku = permitido[valor] ? valor : "todos";
+    pintarFiltroEstadoSku();
+    renderTabla();
+  }
+
   function renderTabla() {
     const body = $("tabla-skus");
     const q = textoSku(state.filtro);
-    const rows = (state.inventario.skus || []).filter((item) => coincideSufijoSku(item.sku, q));
+    const rows = (state.inventario.skus || []).filter(
+      (item) => coincideSufijoSku(item.sku, q) && coincideFiltroEstadoSku(item)
+    );
+    pintarFiltroEstadoSku();
     if (!rows.length) {
-      body.innerHTML = `<tr><td colspan="4" class="empty">Sin SKUs para mostrar.</td></tr>`;
+      body.innerHTML = `<tr><td colspan="4" class="empty">${mensajeTablaSkuVacia()}</td></tr>`;
       return;
     }
     body.innerHTML = rows
@@ -2067,7 +2215,7 @@
       : `SKU ${skuCompleto} seleccionado.`;
     pushChat("al", enPantalla, { evento: "sku_click", sku: skuCompleto });
     hablar(`Seleccionado SKU ${skuCorto}`);
-    irABloque("B");
+    irABloque("C");
   }
 
   function mostrarCoincidencias(resultado) {
@@ -2211,7 +2359,6 @@
     }
     const data = actualizarPaletaLocal(state.skuActivo, Math.floor(n));
     aplicarSesion(data);
-    deseleccionarSkuActivo();
     const info = desglosePaletas(data.sku);
     await responder(info.voz, { sku: data.sku.sku, evento: "paleta" });
   }
@@ -2707,6 +2854,9 @@
       state.filtro = textoSku(event.target.value);
       renderTabla();
     });
+    document.querySelectorAll("#filtro-estado-sku [data-estado]").forEach((btn) => {
+      btn.addEventListener("click", () => aplicarFiltroEstadoSku(btn.dataset.estado));
+    });
     const operadorInput = $("operador-input");
     if (operadorInput) {
       operadorInput.addEventListener("change", (event) => guardarOperador(event.target.value));
@@ -2743,6 +2893,31 @@
     const btnLimpiarInventario = $("btn-limpiar-inventario");
     if (btnLimpiarInventario) {
       btnLimpiarInventario.addEventListener("click", () => limpiarInventarioSesion());
+    }
+    const btnAgregarSku = $("btn-agregar-sku");
+    if (btnAgregarSku) btnAgregarSku.addEventListener("click", () => abrirModalSkuManual());
+    const skuManualCancelar = $("sku-manual-cancelar");
+    if (skuManualCancelar) skuManualCancelar.addEventListener("click", () => cerrarModalSkuManual());
+    const skuManualAgregar = $("sku-manual-agregar");
+    if (skuManualAgregar) skuManualAgregar.addEventListener("click", () => agregarSkuManual());
+    const skuManualCodigo = $("sku-manual-codigo");
+    if (skuManualCodigo) {
+      skuManualCodigo.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          const cajas = $("sku-manual-cajas");
+          if (cajas) cajas.focus();
+        }
+      });
+    }
+    const skuManualCajas = $("sku-manual-cajas");
+    if (skuManualCajas) {
+      skuManualCajas.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          agregarSkuManual();
+        }
+      });
     }
     $("sku-modal-close").addEventListener("click", () => $("sku-modal").classList.add("hidden"));
     const pesoAlertaSeguir = $("peso-alerta-seguir");

@@ -22,7 +22,7 @@
         },
       };
     </script>
-    <link rel="stylesheet" href="/static/styles.css?v=1.0.3" />
+    <link rel="stylesheet" href="/static/styles.css?v=1.0.8" />
     <style>
       .count-field {
         justify-content: flex-end !important;
@@ -175,6 +175,22 @@
       </div>
     </div>
 
+    <div id="sku-manual-modal" class="overlay hidden" role="dialog" aria-modal="true" aria-labelledby="sku-manual-title">
+      <div class="overlay-card sku-manual-card">
+        <p class="kicker">Inventario</p>
+        <h2 id="sku-manual-title">AGREGAR SKU MANUAL</h2>
+        <p id="sku-manual-error" class="sku-manual-error hidden" role="alert"></p>
+        <label class="sku-manual-label" for="sku-manual-codigo">SKU</label>
+        <input id="sku-manual-codigo" class="sku-manual-input" type="text" inputmode="text" autocomplete="off" autocapitalize="characters" spellcheck="false" />
+        <label class="sku-manual-label" for="sku-manual-cajas">Cajas</label>
+        <input id="sku-manual-cajas" class="sku-manual-input" type="text" inputmode="numeric" autocomplete="off" spellcheck="false" />
+        <div class="sku-manual-actions">
+          <button type="button" class="btn-secondary" id="sku-manual-cancelar">CANCELAR</button>
+          <button type="button" class="btn-primary" id="sku-manual-agregar">AGREGAR</button>
+        </div>
+      </div>
+    </div>
+
     <header class="topbar">
       <div class="brand">
         <span class="logo">AL</span>
@@ -243,45 +259,23 @@
         </section>
       </section>
 
-      <section id="bloque-b" class="bloque" data-bloque="B" aria-label="Bloque B conteo">
-        <section class="panel count-panel" aria-label="Conteo táctil">
-          <div class="panel-head">
-            <div>
-              <p class="kicker">SKU activo</p>
-              <h2 id="count-sku-label">Seleccione un SKU en la tabla</h2>
-            </div>
-            <span id="count-sku-meta" class="muted">0 / 0</span>
-          </div>
-          <p id="pallet-breakdown" class="pallet-breakdown">0 / 0 cajas</p>
-          <p id="alerta-sku" class="sku-alert hidden" role="alert">Por favor, selecciona un SKU primero</p>
-          <div class="count-field">
-            <label class="count-field-label" for="paleta-input">Cajas por paleta</label>
-            <input id="paleta-input" class="paleta-input" type="number" inputmode="numeric" min="0" step="1" value="0" />
-          </div>
-          <div class="count-field">
-            <label class="count-field-label" for="peso-kg-input">Más pesado (kg)</label>
-            <input id="peso-kg-input" class="peso-input" type="number" inputmode="decimal" min="0" step="0.01" value="" placeholder="kg" />
-          </div>
-          <p id="peso-lbs-label" class="peso-lbs-label">0.00 lb</p>
-          <div class="count-field">
-            <label class="count-field-label" for="cajas-input">Cajas a procesar</label>
-            <input id="cajas-input" class="count-input" type="number" inputmode="numeric" min="0" step="1" value="0" />
-          </div>
-          <div class="count-actions">
-            <button type="button" id="btn-sumar-cajas" class="btn-primary btn-count">SUMAR CAJAS</button>
-            <button type="button" id="btn-fijar-cajas" class="btn-secondary btn-count">FIJAR</button>
-          </div>
-        </section>
-      </section>
-
-      <section id="bloque-c" class="bloque" data-bloque="C" aria-label="Bloque C inventario">
+      <section id="bloque-b" class="bloque" data-bloque="B" aria-label="Bloque B inventario">
         <section class="panel" id="inventario-panel">
           <div class="panel-head inventario-head">
-            <h2>Inventario de sesión</h2>
+            <div class="inventario-title-row">
+              <h2>Inventario de sesión</h2>
+              <button type="button" id="btn-agregar-sku" class="btn-ghost btn-agregar-sku">+ Agregar SKU</button>
+            </div>
             <div class="inventario-head-actions">
               <input id="tabla-filtro" class="filter-input" type="text" inputmode="text" autocomplete="off" spellcheck="false" placeholder="Filtrar SKU… (ej. 027)" />
               <button type="button" id="btn-limpiar-inventario" class="btn-ghost">🧹 Limpiar inventario</button>
             </div>
+          </div>
+          <div id="filtro-estado-sku" class="filtro-estado" role="group" aria-label="Filtrar SKU por estado">
+            <button type="button" class="filtro-estado-btn is-active" data-estado="todos" aria-pressed="true">Todos</button>
+            <button type="button" class="filtro-estado-btn" data-estado="pendiente" aria-pressed="false">Pendiente</button>
+            <button type="button" class="filtro-estado-btn" data-estado="en_proceso" aria-pressed="false">En proceso</button>
+            <button type="button" class="filtro-estado-btn" data-estado="finalizado" aria-pressed="false">Finalizado</button>
           </div>
           <div class="table-wrap">
             <table>
@@ -299,6 +293,39 @@
                 </tr>
               </tbody>
             </table>
+          </div>
+        </section>
+      </section>
+
+      <section id="bloque-c" class="bloque" data-bloque="C" aria-label="Bloque C trabajo">
+        <section class="panel count-panel" aria-label="Conteo táctil">
+          <div class="panel-head">
+            <div>
+              <p class="kicker">SKU activo</p>
+              <h2 id="count-sku-label">Seleccione un SKU en la tabla</h2>
+            </div>
+            <span id="count-sku-meta" class="muted">0 / 0</span>
+          </div>
+          <p id="pallet-breakdown" class="pallet-breakdown">0 / 0 cajas</p>
+          <p id="alerta-sku" class="sku-alert hidden" role="alert">Por favor, selecciona un SKU primero</p>
+          <div class="count-metrics">
+            <div class="count-metric">
+              <label class="count-metric-label" for="paleta-input">Cajas/paleta</label>
+              <input id="paleta-input" class="paleta-input" type="number" inputmode="numeric" min="0" step="1" value="0" />
+            </div>
+            <div class="count-metric">
+              <label class="count-metric-label" for="peso-kg-input">Más pesada</label>
+              <input id="peso-kg-input" class="peso-input" type="number" inputmode="decimal" min="0" step="0.01" value="" placeholder="kg" />
+              <p id="peso-lbs-label" class="peso-lbs-label">0.00 lb</p>
+            </div>
+          </div>
+          <div class="count-row-cajas">
+            <button type="button" id="btn-sumar-cajas" class="btn-primary btn-count">SUMAR</button>
+            <div class="cajas-center">
+              <label class="cajas-center-label" for="cajas-input">&lt;--Cajas--&gt;</label>
+              <input id="cajas-input" class="count-input" type="number" inputmode="numeric" min="0" step="1" value="0" />
+            </div>
+            <button type="button" id="btn-fijar-cajas" class="btn-secondary btn-count">FIJAR</button>
           </div>
         </section>
       </section>
@@ -399,6 +426,6 @@
     </div>
 
     <script src="/static/config.js?v=1.0.1"></script>
-    <script src="/static/app.js?v=1.0.3"></script>
+    <script src="/static/app.js?v=1.0.8"></script>
   </body>
 </html>

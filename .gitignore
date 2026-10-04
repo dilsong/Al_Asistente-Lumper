@@ -11,3 +11,5 @@ data/*.csv
 .vscode/
 data/sesion_chat.json
 data/inventario_sesion.json
+tests/fixtures/ocr/*
+!tests/fixtures/ocr/.gitkeep

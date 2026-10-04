@@ -122,7 +122,7 @@ def _sku_item(sku: str, qty: int, producto: str = "") -> dict[str, Any]:
     codigo = _sanear_sku(str(sku).strip() if sku is not None else "")
     return {
         "sku": codigo,
-        "producto": (producto or codigo).strip(),
+        "producto": str(producto or "").strip(),
         "cantidad_esperada": max(int(qty), 0),
         "contador": 0,
         "estado": "pendiente",
@@ -299,13 +299,37 @@ def extraer_texto(data: bytes) -> str:
         _liberar_memoria_ocr(imagen)
 
 
+MAX_LADO_VISION = 1600
+
+
+def _ms(inicio: float) -> int:
+    return int((time.perf_counter() - inicio) * 1000)
+
+
+def _jpeg_ya_preparado(data: bytes) -> bool:
+    """True si el cliente ya envió JPEG apaisado dentro del límite de visión."""
+    if not data or data[:2] != b"\xff\xd8":
+        return False
+    try:
+        with Image.open(io.BytesIO(data)) as im:
+            if (im.format or "").upper() != "JPEG":
+                return False
+            w, h = im.size
+            if min(w, h) < 32 or max(w, h) > MAX_LADO_VISION:
+                return False
+            return w >= h
+    except Exception:
+        return False
+
+
 def _imagen_a_jpeg_bytes(data: bytes) -> bytes:
-    """Orienta la hoja (retrato → apaisado) y deja JPEG listo para visión."""
+    """Usa el JPEG del cliente si ya está listo; si no, orienta y limita a 1600 px."""
+    if _jpeg_ya_preparado(data):
+        return data
     image = _abrir_hoja(data)
     try:
         w, h = image.size
-        max_lado = 1600
-        scale = min(1.0, max_lado / max(w, h, 1))
+        scale = min(1.0, MAX_LADO_VISION / max(w, h, 1))
         if scale < 1:
             image = image.resize(
                 (max(1, int(w * scale)), max(1, int(h * scale))),
@@ -351,19 +375,26 @@ def extraer_texto_easyocr(imagen: Image.Image) -> str:
 
 
 VISION_PROMPT = (
-    "You read a warehouse Inbound Receiving Report (or Purchase Order Report). "
-    "The page is landscape: title at the top, table below. If text looks sideways, rotate it in your head first. "
-    "Return ONLY JSON, no markdown and no extra prose. "
-    'Exact shape: {"contenedor":"KKFU7868019","skus":[{"sku":"1015223027","descripcion":"HUSKY 52-13 MATTE BLK COMBO","esperado":54}]} '
-    "contenedor = Trailer value (example KKFU7868019), digits/letters only. "
-    "COLUMN MAPPING FOR INBOUND RECEIVING REPORT PRODUCT TABLE: "
-    'sku = exact digits under the table column headed "SKU" on each product row. Example: 1015223027. '
-    "Never use ASN, Trailer, Vendor/DC, BOL, Dock Door, PO, or header counts as sku. "
-    "ASN example 14881711 is NOT a sku. Trailer example KKFU7868019 is NOT a sku. "
-    'esperado = integer under "Exp Eaches" on that same product row. If missing, use "Total Cases" on that row. Example: 54. '
-    "Never use Full Pallets, Partial Pallets, Rec Eaches, or header totals. Sample sheet: esperado is 54, not Full Pallets 27. "
-    "descripcion = SKU Description on that same product row. "
-    "One object per product data row. JSON only."
+    "Warehouse receiving sheet. Only two known formats: "
+    "Inbound Receiving Report or Purchase Order Report. "
+    "If the page looks sideways, mentally rotate so the title is at the top. "
+    "Extract ONLY: container id, every product SKU, and expected boxes per SKU. "
+    "Ignore everything else: descriptions, product names, barcodes, vendor, PO, "
+    "ASN, BOL, Dock Door, T/V/H, securing method, build on, SKU build, "
+    "full/partial pallets, Rec Eaches, company name, header text. "
+    "Inbound Receiving Report: contenedor = Trailer; sku = SKU column; "
+    "esperado = Exp Eaches integer. Never use Rec Eaches. "
+    "ASN and Trailer are not SKUs. "
+    "Purchase Order Report: contenedor = Other Reference Number; "
+    "sku = Product/SKU column; esperado = QTY integer. "
+    "SKU must stay a string (keep leading zeros, letters, dashes, suffixes). "
+    "If the sheet prints SKUs: N and/or Total Cases / Total Quantity, also include "
+    '"_validation":{"declared_skus":N,"declared_cases":N} using only those printed numbers. '
+    "Omit _validation if they are not printed. Never invent them. "
+    "Never use Total Cases or Total Quantity as a row quantity. "
+    "Do not explain, describe, transcribe, or reason. No markdown. "
+    "Return ONLY this JSON: "
+    '{"contenedor":"KKFU7868019","skus":[{"sku":"1015223027","esperado":54}]}'
 )
 
 
@@ -463,11 +494,14 @@ def _post_json(url: str, cuerpo: dict[str, Any], headers: dict[str, str], timeou
             raise RuntimeError(f"HTTP {exc.code} {exc.reason}: {cuerpo_err}") from exc
 
 
-def extraer_json_openai(data: bytes) -> dict[str, Any] | None:
+def extraer_json_openai(
+    data: bytes, jpeg: bytes | None = None, prompt: str | None = None
+) -> dict[str, Any] | None:
     api_key = _clave_openai()
     if not api_key:
         return None
     modelo = os.environ.get("OPENAI_VISION_MODEL", "gpt-4o-mini")
+    imagen_b64 = base64.b64encode(jpeg or _imagen_a_jpeg_bytes(data)).decode("ascii")
     cuerpo = {
         "model": modelo,
         "temperature": 0,
@@ -476,10 +510,10 @@ def extraer_json_openai(data: bytes) -> dict[str, Any] | None:
             {
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": VISION_PROMPT},
+                    {"type": "text", "text": prompt or VISION_PROMPT},
                     {
                         "type": "image_url",
-                        "image_url": {"url": f"data:image/jpeg;base64,{_imagen_a_jpeg_b64(data)}"},
+                        "image_url": {"url": f"data:image/jpeg;base64,{imagen_b64}"},
                     },
                 ],
             }
@@ -652,13 +686,16 @@ def _modelos_gemini_a_usar(api_key: str) -> list[str]:
     return ordenados
 
 
-def extraer_json_gemini(data: bytes) -> dict[str, Any] | None:
+def extraer_json_gemini(
+    data: bytes, jpeg: bytes | None = None, prompt: str | None = None
+) -> dict[str, Any] | None:
     api_key = _clave_gemini()
     if not api_key:
         return None
+    texto_prompt = prompt or VISION_PROMPT
     modelos = _modelos_gemini_a_usar(api_key)
-    jpeg = _imagen_a_jpeg_bytes(data)
-    parsed, ocupados = extraer_json_gemini_sdk(jpeg, api_key, modelos)
+    jpeg = jpeg if jpeg is not None else _imagen_a_jpeg_bytes(data)
+    parsed, ocupados = extraer_json_gemini_sdk(jpeg, api_key, modelos, prompt=texto_prompt)
     if parsed:
         return parsed
     imagen_b64 = base64.b64encode(jpeg).decode("ascii")
@@ -668,7 +705,7 @@ def extraer_json_gemini(data: bytes) -> dict[str, Any] | None:
         "contents": [
             {
                 "parts": [
-                    {"text": VISION_PROMPT},
+                    {"text": texto_prompt},
                     {"inline_data": {"mime_type": "image/jpeg", "data": imagen_b64}},
                 ]
             }
@@ -717,9 +754,10 @@ def extraer_json_gemini(data: bytes) -> dict[str, Any] | None:
 
 
 def extraer_json_gemini_sdk(
-    data: bytes, api_key: str, modelos: list[str]
+    data: bytes, api_key: str, modelos: list[str], prompt: str | None = None
 ) -> tuple[dict[str, Any] | None, set[str]]:
     ocupados: set[str] = set()
+    texto_prompt = prompt or VISION_PROMPT
     try:
         from google import genai
         from google.genai import types
@@ -734,7 +772,7 @@ def extraer_json_gemini_sdk(
         def _llamar_sdk(modelo: str) -> dict[str, Any]:
             resp = cliente.models.generate_content(
                 model=modelo,
-                contents=[VISION_PROMPT, parte],
+                contents=[texto_prompt, parte],
                 config=config,
             )
             parsed_sdk = _parsear_json_modelo(getattr(resp, "text", "") or "")
@@ -793,8 +831,6 @@ def _qty_esperado_fila(fila: dict[str, Any]) -> int:
         "exp_eaches",
         "Exp Eaches",
         "exp eaches",
-        "total_cases",
-        "Total Cases",
         "cajas_esperadas",
         "cantidad_esperada",
         "qty",
@@ -862,18 +898,11 @@ def inventario_desde_vision(payload: dict[str, Any], formato: str | None = None)
             continue
         if sku.replace("-", "").isalpha():
             continue
-        desc = str(
-            fila.get("descripcion")
-            or fila.get("SKU Description")
-            or fila.get("Description")
-            or fila.get("description")
-            or sku
-        )
-        if _parece_texto_ocr_basura(desc):
-            continue
         qty = _qty_esperado_fila(fila)
+        if qty <= 0:
+            continue
         vistos.add(sku)
-        skus.append(_sku_item(sku, qty, desc[:80]))
+        skus.append(_sku_item(sku, qty, ""))
     contenedor = ""
     if isinstance(payload, dict):
         contenedor = str(payload.get("contenedor") or payload.get("trailer") or "").strip()
@@ -885,32 +914,370 @@ def inventario_desde_vision(payload: dict[str, Any], formato: str | None = None)
     }
 
 
+def extraer_meta_validacion(payload: dict[str, Any] | None) -> dict[str, Any]:
+    """Saca metadatos temporales de validación. No forman parte del inventario."""
+    meta = {"declared_skus": None, "declared_cases": None}
+    if not isinstance(payload, dict):
+        return meta
+    bloque = payload.get("_validation")
+    if not isinstance(bloque, dict):
+        bloque = payload
+    meta["declared_skus"] = _entero_meta(
+        bloque.get("declared_skus")
+        if isinstance(bloque, dict)
+        else None
+    )
+    if meta["declared_skus"] is None and isinstance(bloque, dict):
+        meta["declared_skus"] = _entero_meta(bloque.get("skus_n") or bloque.get("SKUs"))
+    meta["declared_cases"] = _entero_meta(
+        bloque.get("declared_cases")
+        if isinstance(bloque, dict)
+        else None
+    )
+    if meta["declared_cases"] is None and isinstance(bloque, dict):
+        meta["declared_cases"] = _entero_meta(
+            bloque.get("total_cases") or bloque.get("total_quantity") or bloque.get("Total Cases")
+        )
+    return meta
+
+
+def _entero_meta(valor: Any) -> int | None:
+    if valor in (None, "", False):
+        return None
+    try:
+        n = int(float(str(valor).replace(",", "")))
+    except (TypeError, ValueError):
+        return None
+    return n if n > 0 else None
+
+
+def _nombre_formato(formato: str) -> str:
+    return "inbound" if (formato or "").upper() == "B" else "purchase_order"
+
+
+def inferir_formato_vision(
+    formato: str | None, meta: dict[str, Any], inventario: dict[str, Any]
+) -> str:
+    if formato and str(formato).upper() in {"A", "B"}:
+        return str(formato).upper()
+    if meta.get("declared_skus") is not None:
+        return "B"
+    skus = inventario.get("skus") or []
+    if len(skus) <= 1:
+        return "B"
+    return "A"
+
+
+def estimar_filas_producto(data: bytes) -> tuple[int, int]:
+    """Conteo geométrico barato de filas (anclas de tinta/barcode). No decodifica."""
+    inicio = time.perf_counter()
+    if not data:
+        return 0, _ms(inicio)
+    imagen = None
+    try:
+        imagen = _abrir_hoja(data)
+        tabla = recortar_roi_tabla(imagen)
+        ancho, alto = tabla.size
+        if ancho < 80 or alto < 80 or max(imagen.size) < 400:
+            return 0, _ms(inicio)
+        franja = tabla.crop((0, 0, max(8, int(ancho * 0.22)), alto)).convert("L")
+        franja = ImageOps.autocontrast(franja)
+        destino_h = min(alto, 360)
+        scale = destino_h / max(alto, 1)
+        if scale < 1:
+            franja = franja.resize(
+                (max(8, int(franja.size[0] * scale)), destino_h),
+                getattr(Image, "Resampling", Image).BILINEAR,
+            )
+        try:
+            import numpy as np
+        except Exception:
+            return 0, _ms(inicio)
+        matriz = np.asarray(franja, dtype=np.int32)
+        tinta = 255 - matriz
+        perfil = tinta.mean(axis=1)
+        if perfil.size < 8:
+            return 0, _ms(inicio)
+        umbral = max(18.0, float(np.percentile(perfil, 70)))
+        min_sep = max(4, perfil.size // 28)
+        filas = 0
+        ultimo = -min_sep
+        activo = False
+        for i, valor in enumerate(perfil):
+            if valor >= umbral:
+                if not activo and (i - ultimo) >= min_sep:
+                    filas += 1
+                    ultimo = i
+                    activo = True
+            else:
+                activo = False
+        return filas, _ms(inicio)
+    except Exception as exc:
+        print(f"[AL OCR] validador filas: {exc}", flush=True)
+        return 0, _ms(inicio)
+    finally:
+        _liberar_memoria_ocr(imagen)
+
+
+def evaluar_completitud(
+    inventario: dict[str, Any],
+    meta: dict[str, Any] | None = None,
+    formato: str | None = None,
+    data: bytes | None = None,
+) -> dict[str, Any]:
+    """OK / INCOMPLETE / UNVERIFIABLE. No escribe al inventario."""
+    inicio = time.perf_counter()
+    meta = meta or {}
+    skus = list(inventario.get("skus") or [])
+    extracted = len(skus)
+    suma = sum(int(item.get("cantidad_esperada") or 0) for item in skus)
+    declared_skus = _entero_meta(meta.get("declared_skus"))
+    declared_cases = _entero_meta(meta.get("declared_cases"))
+    fmt = inferir_formato_vision(formato, meta, inventario)
+    expected_rows: int | None = None
+    geom_ms = 0
+    razones: list[str] = []
+
+    if fmt == "A" and data and declared_skus is None and declared_cases is None:
+        expected_rows, geom_ms = estimar_filas_producto(data)
+        if expected_rows < 2:
+            expected_rows = None
+
+    estado = "UNVERIFIABLE"
+    if declared_skus is not None:
+        if extracted >= declared_skus:
+            estado = "OK"
+        else:
+            estado = "INCOMPLETE"
+            razones.append(f"skus {extracted}<{declared_skus}")
+    if declared_cases is not None and suma < declared_cases:
+        estado = "INCOMPLETE"
+        razones.append(f"cases {suma}<{declared_cases}")
+    elif declared_cases is not None and estado == "UNVERIFIABLE":
+        estado = "OK"
+    if fmt == "A" and expected_rows is not None and extracted <= expected_rows - 2:
+        estado = "INCOMPLETE"
+        razones.append(f"rows {extracted}<{expected_rows}")
+    elif fmt == "A" and expected_rows is not None and estado == "UNVERIFIABLE":
+        estado = "OK"
+
+    return {
+        "estado": estado,
+        "formato": fmt,
+        "extracted": extracted,
+        "declared_skus": declared_skus,
+        "declared_cases": declared_cases,
+        "expected_rows": expected_rows,
+        "suma_cajas": suma,
+        "validator_ms": _ms(inicio),
+        "geom_ms": geom_ms,
+        "razones": razones,
+    }
+
+
+def _prompt_recuperacion(skus_conocidos: list[str], formato: str) -> str:
+    lista = ", ".join(skus_conocidos) if skus_conocidos else "(none)"
+    inbound = (
+        "Inbound Receiving Report: sku = SKU column; esperado = Exp Eaches. Never Rec Eaches. "
+        if (formato or "").upper() == "B"
+        else "Purchase Order Report: sku = Product/SKU column; esperado = QTY. "
+    )
+    return (
+        "Warehouse sheet. A previous read already found these SKUs:\n"
+        f"{lista}\n"
+        "There is evidence of missing product rows.\n"
+        "Find ONLY product rows not listed above.\n"
+        f"{inbound}"
+        "Do not return known SKUs. Do not return descriptions. Do not return container. "
+        "Do not explain. JSON only: "
+        '{"skus":[{"sku":"...","esperado":0}]}'
+    )
+
+
+def _jpeg_recorte_tabla(data: bytes) -> bytes:
+    """Crop de la tabla para recuperación; no agranda la hoja completa."""
+    image = _abrir_hoja(data)
+    try:
+        tabla = recortar_roi_tabla(image)
+        w, h = tabla.size
+        scale = min(1.0, MAX_LADO_VISION / max(w, h, 1))
+        if scale < 1:
+            tabla = tabla.resize(
+                (max(1, int(w * scale)), max(1, int(h * scale))),
+                getattr(Image, "Resampling", Image).LANCZOS,
+            )
+        buf = io.BytesIO()
+        tabla.save(buf, format="JPEG", quality=85, optimize=True)
+        return buf.getvalue()
+    finally:
+        image.close()
+
+
+def _llamar_vision(
+    data: bytes, jpeg: bytes | None = None, prompt: str | None = None
+) -> dict[str, Any] | None:
+    return extraer_json_gemini(data, jpeg=jpeg, prompt=prompt) or extraer_json_openai(
+        data, jpeg=jpeg, prompt=prompt
+    )
+
+
+def fusionar_skus_recuperados(
+    existentes: list[dict[str, Any]], recuperados: list[dict[str, Any]]
+) -> tuple[list[dict[str, Any]], int]:
+    """Añade SKU nuevos. Si hay conflicto de cajas, conserva la primera pasada."""
+    por_sku = {str(item.get("sku")): item for item in existentes if item.get("sku")}
+    agregados = 0
+    for item in recuperados:
+        sku = str(item.get("sku") or "")
+        if not sku:
+            continue
+        if sku in por_sku:
+            previa = int(por_sku[sku].get("cantidad_esperada") or 0)
+            nueva = int(item.get("cantidad_esperada") or 0)
+            if nueva and previa and nueva != previa:
+                print(
+                    f"[AL OCR] qty_conflict sku={sku} keep={previa} recovered={nueva}",
+                    flush=True,
+                )
+            continue
+        por_sku[sku] = item
+        agregados += 1
+    return list(por_sku.values()), agregados
+
+
+def recuperar_skus_faltantes(
+    data: bytes,
+    jpeg: bytes | None,
+    inventario: dict[str, Any],
+    formato: str,
+) -> tuple[list[dict[str, Any]], str]:
+    """Segunda pasada dirigida: solo SKU ausentes. Un crop de tabla en PO."""
+    conocidos = [str(item.get("sku")) for item in (inventario.get("skus") or []) if item.get("sku")]
+    prompt = _prompt_recuperacion(conocidos, formato)
+    recorte = jpeg
+    estrategia = "full"
+    if (formato or "").upper() == "A":
+        try:
+            recorte = _jpeg_recorte_tabla(data)
+            estrategia = "table_crop"
+        except Exception as exc:
+            print(f"[AL OCR] crop tabla falló ({exc}); se usa la hoja.", flush=True)
+            recorte = jpeg
+            estrategia = "full"
+    vision = _llamar_vision(data, jpeg=recorte, prompt=prompt)
+    if not vision:
+        return [], estrategia
+    parcial = inventario_desde_vision(vision, formato=formato)
+    return list(parcial.get("skus") or []), estrategia
+
+
+def _log_ocr_tiempos(
+    *,
+    prepare_ms: int,
+    vision_ms: int,
+    normalize_ms: int,
+    fallback_ms: int,
+    fallback: str,
+    total_ms: int,
+    n_skus: int,
+    skip_recompress: bool = False,
+) -> None:
+    extra = " (sin recomprimir)" if skip_recompress else ""
+    print(f"[AL OCR] image_prepare: {prepare_ms}ms{extra}", flush=True)
+    print(f"[AL OCR] vision: {vision_ms}ms", flush=True)
+    print(f"[AL OCR] normalize: {normalize_ms}ms", flush=True)
+    if fallback == "skipped":
+        print("[AL OCR] fallback: skipped", flush=True)
+    else:
+        print(f"[AL OCR] fallback: {fallback} {fallback_ms}ms", flush=True)
+    print(f"[AL OCR] total: {total_ms}ms", flush=True)
+    print(f"[AL OCR] skus: {n_skus}", flush=True)
+
+
 def procesar_documento(data: bytes, formato: str | None = None) -> dict[str, Any]:
-    """Visión (Gemini / OpenAI) lee la hoja; Tesseract solo si no hay API o falla."""
+    """Visión (Gemini; OpenAI/Tesseract/EasyOCR solo si el anterior no sirve)."""
     global _ERRORES_VISION
     _ERRORES_VISION = []
     imagen = None
     tabla = None
+    t_total = time.perf_counter()
+    prepare_ms = 0
+    vision_ms = 0
+    normalize_ms = 0
+    fallback_ms = 0
+    fallback = "skipped"
+    skip_recompress = False
+    invent_v: dict[str, Any] | None = None
     try:
+        jpeg: bytes | None = None
         if not _hay_clave_vision():
             print(
                 "[AL OCR] Visión no disponible: falta GEMINI_API_KEY / OPENAI_API_KEY / API_KEY.",
                 flush=True,
             )
         else:
-            print("[AL OCR] Enviando hoja a visión (Gemini / OpenAI)…", flush=True)
-        vision = extraer_json_gemini(data) or extraer_json_openai(data) if _hay_clave_vision() else None
-        if vision:
-            invent_v = inventario_desde_vision(vision, formato=formato)
-            if invent_v.get("skus"):
-                return invent_v
-            print("[AL OCR] Visión respondió sin SKUs útiles.", flush=True)
-        elif _hay_clave_vision():
-            detalle = " | ".join(_ERRORES_VISION[-3:]) or "sin detalle"
-            print(f"[AL OCR] Visión falló. Respaldo local ligero (Tesseract). Detalle: {detalle}", flush=True)
-        else:
-            print("[AL OCR] Respaldo local ligero (Tesseract). EasyOCR no se cargará.", flush=True)
+            t_prep = time.perf_counter()
+            jpeg = _imagen_a_jpeg_bytes(data)
+            prepare_ms = _ms(t_prep)
+            skip_recompress = jpeg is data
+            print("[AL OCR] Enviando hoja a visión (Gemini; OpenAI solo si falla)…", flush=True)
+            t_vis = time.perf_counter()
+            vision = _llamar_vision(data, jpeg=jpeg)
+            vision_ms = _ms(t_vis)
+            if vision:
+                t_norm = time.perf_counter()
+                invent_v = inventario_desde_vision(vision, formato=formato)
+                normalize_ms = _ms(t_norm)
+                if invent_v.get("skus"):
+                    meta = extraer_meta_validacion(vision)
+                    if isinstance(vision, dict):
+                        vision.pop("_validation", None)
+                    chequeo = evaluar_completitud(invent_v, meta, formato=formato, data=data)
+                    fmt = chequeo["formato"]
+                    invent_v["formato"] = fmt
+                    print(f"[AL OCR] format: {_nombre_formato(fmt)}", flush=True)
+                    print(f"[AL OCR] first_pass: {vision_ms}ms", flush=True)
+                    print(f"[AL OCR] extracted_skus: {chequeo['extracted']}", flush=True)
+                    if chequeo["declared_skus"] is not None:
+                        print(f"[AL OCR] declared_skus: {chequeo['declared_skus']}", flush=True)
+                    if chequeo["declared_cases"] is not None:
+                        print(f"[AL OCR] declared_cases: {chequeo['declared_cases']}", flush=True)
+                    if chequeo["expected_rows"] is not None:
+                        print(f"[AL OCR] expected_rows: {chequeo['expected_rows']}", flush=True)
+                    print(f"[AL OCR] validator: {chequeo['validator_ms']}ms", flush=True)
+                    print(f"[AL OCR] completeness: {chequeo['estado']}", flush=True)
+                    recovered_n = 0
+                    if chequeo["estado"] == "INCOMPLETE":
+                        print("[AL OCR] recovery: triggered", flush=True)
+                        t_rec = time.perf_counter()
+                        recuperados, estrategia = recuperar_skus_faltantes(
+                            data, jpeg, invent_v, fmt
+                        )
+                        invent_v["skus"], recovered_n = fusionar_skus_recuperados(
+                            invent_v.get("skus") or [], recuperados
+                        )
+                        print(f"[AL OCR] recovery: {estrategia} {_ms(t_rec)}ms", flush=True)
+                        print(f"[AL OCR] recovered_skus: {recovered_n}", flush=True)
+                        print(f"[AL OCR] final_skus: {len(invent_v['skus'])}", flush=True)
+                    else:
+                        print("[AL OCR] recovery: skipped", flush=True)
+                    _log_ocr_tiempos(
+                        prepare_ms=prepare_ms,
+                        vision_ms=vision_ms,
+                        normalize_ms=normalize_ms,
+                        fallback_ms=0,
+                        fallback="skipped",
+                        total_ms=_ms(t_total),
+                        n_skus=len(invent_v["skus"]),
+                        skip_recompress=skip_recompress,
+                    )
+                    return invent_v
+                print("[AL OCR] Visión respondió sin SKUs útiles.", flush=True)
+            else:
+                detalle = " | ".join(_ERRORES_VISION[-3:]) or "sin detalle"
+                print(f"[AL OCR] Visión falló. Respaldo local ligero (Tesseract). Detalle: {detalle}", flush=True)
 
+        t_fb = time.perf_counter()
         texto = extraer_texto(data)
         inventario = parsear_texto(texto, formato=formato) if texto.strip() else {
             "contenedor": "",
@@ -925,9 +1292,21 @@ def procesar_documento(data: bytes, formato: str | None = None) -> dict[str, Any
             and not str(item.get("sku", "")).replace("-", "").isalpha()
             and not _parece_encabezado_no_sku(str(item.get("sku")))
             and not _es_ruido_sku(str(item.get("sku")))
-            and not _parece_texto_ocr_basura(str(item.get("producto") or ""))
+            and int(item.get("cantidad_esperada") or 0) > 0
         ]
         if inventario.get("skus") and _lectura_local_confiable(inventario, texto):
+            fallback = "tesseract"
+            fallback_ms = _ms(t_fb)
+            _log_ocr_tiempos(
+                prepare_ms=prepare_ms,
+                vision_ms=vision_ms,
+                normalize_ms=normalize_ms,
+                fallback_ms=fallback_ms,
+                fallback=fallback,
+                total_ms=_ms(t_total),
+                n_skus=len(inventario["skus"]),
+                skip_recompress=skip_recompress,
+            )
             return inventario
         if inventario.get("skus"):
             print("[AL OCR] Respaldo Tesseract descartado: lectura ilegible.", flush=True)
@@ -939,10 +1318,34 @@ def procesar_documento(data: bytes, formato: str | None = None) -> dict[str, Any
                 "[AL OCR] EasyOCR omitido: hay clave de visión. No se carga el modelo pesado.",
                 flush=True,
             )
+            fallback = "skipped"
+            fallback_ms = _ms(t_fb)
+            _log_ocr_tiempos(
+                prepare_ms=prepare_ms,
+                vision_ms=vision_ms,
+                normalize_ms=normalize_ms,
+                fallback_ms=fallback_ms,
+                fallback=fallback,
+                total_ms=_ms(t_total),
+                n_skus=len(inventario.get("skus") or []),
+                skip_recompress=skip_recompress,
+            )
             return inventario
 
         if not easy_forzado:
             print("[AL OCR] EasyOCR omitido (defina AL_EASYOCR=1 para activarlo).", flush=True)
+            fallback = "skipped"
+            fallback_ms = _ms(t_fb)
+            _log_ocr_tiempos(
+                prepare_ms=prepare_ms,
+                vision_ms=vision_ms,
+                normalize_ms=normalize_ms,
+                fallback_ms=fallback_ms,
+                fallback=fallback,
+                total_ms=_ms(t_total),
+                n_skus=len(inventario.get("skus") or []),
+                skip_recompress=skip_recompress,
+            )
             return inventario
 
         print("[AL OCR] Tesseract no halló SKUs. Probando EasyOCR…", flush=True)
@@ -952,12 +1355,37 @@ def procesar_documento(data: bytes, formato: str | None = None) -> dict[str, Any
         if texto_easy.strip():
             inventario = parsear_texto(f"{texto}\n{texto_easy}", formato=formato)
             if inventario.get("skus"):
+                fallback = "easyocr"
+                fallback_ms = _ms(t_fb)
+                _log_ocr_tiempos(
+                    prepare_ms=prepare_ms,
+                    vision_ms=vision_ms,
+                    normalize_ms=normalize_ms,
+                    fallback_ms=fallback_ms,
+                    fallback=fallback,
+                    total_ms=_ms(t_total),
+                    n_skus=len(inventario["skus"]),
+                    skip_recompress=skip_recompress,
+                )
                 return inventario
 
+        fallback = "easyocr"
+        fallback_ms = _ms(t_fb)
+        _log_ocr_tiempos(
+            prepare_ms=prepare_ms,
+            vision_ms=vision_ms,
+            normalize_ms=normalize_ms,
+            fallback_ms=fallback_ms,
+            fallback=fallback,
+            total_ms=_ms(t_total),
+            n_skus=len(inventario.get("skus") or []),
+            skip_recompress=skip_recompress,
+        )
         return inventario
     finally:
         _liberar_memoria_ocr(tabla, imagen)
         data = b""
+        invent_v = None
 
 
 def ultimo_error_vision() -> str:
@@ -1086,12 +1514,10 @@ def _lectura_local_confiable(inventario: dict[str, Any], texto: str) -> bool:
     skus = inventario.get("skus") or []
     if not skus:
         return False
-    if any(_parece_texto_ocr_basura(str(item.get("producto") or "")) for item in skus):
-        return False
     if any(len(re.sub(r"\D", "", str(item.get("sku") or ""))) >= 9 for item in skus):
         return True
     upper = (texto or "").upper()
-    return "INBOUND" in upper or "HUSKY" in upper or "EXP EACHES" in upper
+    return "INBOUND" in upper or "EXP EACHES" in upper or "PURCHASE ORDER" in upper
 
 
 def _qty_de_linea(linea: str) -> int | None:
@@ -1147,11 +1573,11 @@ def parsear_formato_a(texto: str) -> dict[str, Any]:
         fila = _parsear_fila_producto(linea)
         if not fila:
             continue
-        sku, descripcion, qty = fila
-        if sku in vistos:
+        sku, _descripcion, qty = fila
+        if sku in vistos or qty <= 0:
             continue
         vistos.add(sku)
-        skus.append(_sku_item(sku, qty, descripcion))
+        skus.append(_sku_item(sku, qty))
 
     if not skus:
         skus = _fallback_pares(zona or texto)
@@ -1175,18 +1601,10 @@ def parsear_formato_b(texto: str) -> dict[str, Any]:
     match_exp = re.search(r"exp\s*eaches[:\s]*(\d{1,6})", texto, re.I)
     if match_exp:
         esperado = int(match_exp.group(1))
-    if esperado is None:
-        match_cases = re.search(r"total\s*cases[:\s]*(\d{1,6})", texto, re.I)
-        if match_cases:
-            esperado = int(match_cases.group(1))
 
     zona = _zona_tabla(texto)
     skus: list[dict[str, Any]] = []
     vistos: set[str] = set()
-    desc = ""
-    match_desc = re.search(r"\b(HUSKY[\w\s\-]{4,40})", texto, re.I)
-    if match_desc:
-        desc = re.sub(r"\s+", " ", match_desc.group(1)).strip()
 
     candidatos = re.findall(r"\b(\d{9,12})\b", zona or texto)
     for codigo in candidatos:
@@ -1196,8 +1614,10 @@ def parsear_formato_b(texto: str) -> dict[str, Any]:
         if _es_ruido_sku(sku) or sku in vistos:
             continue
         qty = esperado if esperado is not None else (_qty_de_linea(zona or texto) or 0)
+        if qty <= 0:
+            continue
         vistos.add(sku)
-        skus.append(_sku_item(sku, qty, desc or sku))
+        skus.append(_sku_item(sku, qty))
 
     if not skus:
         for linea in _limpiar_lineas(zona):
@@ -1206,11 +1626,14 @@ def parsear_formato_b(texto: str) -> dict[str, Any]:
             fila = _parsear_fila_producto(linea)
             if not fila:
                 continue
-            sku, descripcion, qty = fila
+            sku, _descripcion, qty = fila
             if sku == asn or sku in vistos:
                 continue
+            cajas = esperado if esperado is not None else qty
+            if cajas <= 0:
+                continue
             vistos.add(sku)
-            skus.append(_sku_item(sku, esperado if esperado is not None else qty, descripcion or desc))
+            skus.append(_sku_item(sku, cajas))
 
     return {
         "contenedor": contenedor,

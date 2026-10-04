@@ -13,3 +13,4 @@ data/sesion_chat.json
 data/inventario_sesion.json
 tests/fixtures/ocr/*
 !tests/fixtures/ocr/.gitkeep
+tests/fixtures/ocr/_bench_latencia.json

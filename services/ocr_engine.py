@@ -22,6 +22,7 @@ from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 
 logger = logging.getLogger(__name__)
 _ERRORES_VISION: list[str] = []
+_ULTIMO_ESTADO_OCR = "no_skus"
 
 
 def cargar_dotenv() -> None:
@@ -247,8 +248,8 @@ def recortar_roi_tabla(imagen: Image.Image) -> Image.Image:
     ancho, alto = imagen.size
     izq = int(ancho * 0.03)
     der = int(ancho * 0.97)
-    top = int(alto * 0.18)
-    bottom = int(alto * 0.86)
+    top = int(alto * 0.08)
+    bottom = int(alto * 0.94)
     if bottom <= top + 40:
         return imagen
     return imagen.crop((izq, top, der, bottom))
@@ -386,9 +387,11 @@ VISION_PROMPT = (
     "esperado = Exp Eaches integer. Never use Rec Eaches. "
     "ASN and Trailer are not SKUs. "
     "Purchase Order Report: contenedor = Other Reference Number; "
-    "sku = Product/SKU column; esperado = QTY integer. "
-    "SKU must stay a string (keep leading zeros, letters, dashes, suffixes). "
-    "If the sheet prints SKUs: N and/or Total Cases / Total Quantity, also include "
+    "sku = Product column, including the first row under the header; "
+    "esperado = QTY integer, never Pallet Qty. "
+    "SKU must stay a string. Letters, digits, dashes and suffixes are valid. "
+    "A SKU does not need digits. "
+    "If the sheet prints SKUs: N, Total Cases, Total Quantity or Total Ordered, also include "
     '"_validation":{"declared_skus":N,"declared_cases":N} using only those printed numbers. '
     "Omit _validation if they are not printed. Never invent them. "
     "Never use Total Cases or Total Quantity as a row quantity. "
@@ -471,7 +474,9 @@ def _detalle_error(exc: Exception) -> str:
     return " | ".join(partes)
 
 
-def _post_json(url: str, cuerpo: dict[str, Any], headers: dict[str, str], timeout: int = 60) -> dict[str, Any]:
+def _post_json(
+    url: str, cuerpo: dict[str, Any], headers: dict[str, str], timeout: int = 20
+) -> dict[str, Any]:
     try:
         import requests
 
@@ -495,11 +500,19 @@ def _post_json(url: str, cuerpo: dict[str, Any], headers: dict[str, str], timeou
 
 
 def extraer_json_openai(
-    data: bytes, jpeg: bytes | None = None, prompt: str | None = None
+    data: bytes,
+    jpeg: bytes | None = None,
+    prompt: str | None = None,
+    presupuesto: _PresupuestoVision | None = None,
 ) -> dict[str, Any] | None:
     api_key = _clave_openai()
     if not api_key:
         return None
+    if presupuesto and not presupuesto.puede_llamar():
+        print("[AL OCR] OpenAI skipped: presupuesto agotado", flush=True)
+        _marcar_estado_ocr("provider_timeout")
+        return None
+    timeout_s = presupuesto.timeout_s() if presupuesto else _VISION_TIMEOUT_S
     modelo = os.environ.get("OPENAI_VISION_MODEL", "gpt-4o-mini")
     imagen_b64 = base64.b64encode(jpeg or _imagen_a_jpeg_bytes(data)).decode("ascii")
     cuerpo = {
@@ -527,6 +540,7 @@ def extraer_json_openai(
                 "Content-Type": "application/json",
                 "Authorization": f"Bearer {api_key}",
             },
+            timeout=int(timeout_s),
         )
         crudo = payload["choices"][0]["message"]["content"]
         print("[AL OCR] Visión OpenAI respondió.", flush=True)
@@ -537,12 +551,17 @@ def extraer_json_openai(
 
 
 _MODELOS_GEMINI_CACHE: list[str] | None = None
-_REINTENTOS_OCUPADO = 3
-_ESPERA_OCUPADO_S = 2
+_REINTENTOS_OCUPADO = 0
+_ESPERA_OCUPADO_S = 0
+# Medido: éxitos 3.1–16.8s; 503/429 ~2–3s; cadena SDK+REST llegó a 35s.
+_PRESUPUESTO_VISION_S = 22
+_VISION_TIMEOUT_S = 18
+_MIN_LLAMADA_S = 3.5
+_MODELOS_VISION_MAX = 2
 _MODELOS_FLASH_PRIORIDAD = (
-    "gemini-flash-latest",
     "gemini-3.6-flash",
     "gemini-3.5-flash",
+    "gemini-flash-latest",
     "gemini-3.8-flash",
     "gemini-3.7-flash",
     "gemini-3.5-flash-lite",
@@ -557,6 +576,40 @@ _MODELOS_PRO_RESPALDO = (
     "gemini-3-pro",
     "gemini-pro-latest",
 )
+
+
+class _PresupuestoVision:
+    """Tope del flujo completo de visión, no de cada modelo por separado."""
+
+    def __init__(self, total_s: float = _PRESUPUESTO_VISION_S) -> None:
+        self.inicio = time.perf_counter()
+        self.total_s = float(total_s)
+
+    def restante_s(self) -> float:
+        return max(0.0, self.total_s - (time.perf_counter() - self.inicio))
+
+    def puede_llamar(self, minimo_s: float = _MIN_LLAMADA_S) -> bool:
+        return self.restante_s() >= minimo_s
+
+    def timeout_s(self, tope: float | None = None) -> float:
+        limite = _VISION_TIMEOUT_S if tope is None else tope
+        return max(1.0, min(float(limite), self.restante_s()))
+
+
+def _marcar_estado_ocr(estado: str, log: bool = True) -> None:
+    global _ULTIMO_ESTADO_OCR
+    _ULTIMO_ESTADO_OCR = estado
+    if log:
+        print(f"[AL OCR] estado: {estado}", flush=True)
+
+
+def ultimo_estado_ocr() -> str:
+    return _ULTIMO_ESTADO_OCR
+
+
+def _es_error_timeout(err: object) -> bool:
+    texto = str(err).lower()
+    return "timeout" in texto or "timed out" in texto
 
 
 def _es_error_ocupado(err: object) -> bool:
@@ -580,23 +633,13 @@ def _es_error_ausente(err: object) -> bool:
 
 
 def _con_reintentos_ocupado(fn, modelo: str):
-    """Ejecuta fn; si Gemini está ocupado (503) reintenta 3 veces con 2 s de espera."""
-    ultimo: Exception | None = None
-    for intento in range(1, _REINTENTOS_OCUPADO + 2):
-        try:
-            return fn(), None
-        except Exception as err:
-            ultimo = err
-            if _es_error_ocupado(err) and intento <= _REINTENTOS_OCUPADO:
-                print(
-                    f"[AL OCR] Gemini ocupado (503) en {modelo}, "
-                    f"reintento {intento}/{_REINTENTOS_OCUPADO}…",
-                    flush=True,
-                )
-                time.sleep(_ESPERA_OCUPADO_S)
-                continue
-            return None, err
-    return None, ultimo
+    """Un intento por modelo. Si está ocupado, se pasa al siguiente sin backoff."""
+    try:
+        return fn(), None
+    except Exception as err:
+        if _es_error_ocupado(err):
+            print(f"[AL OCR] Gemini ocupado en {modelo}, siguiente modelo…", flush=True)
+        return None, err
 
 
 def _get_json(url: str, headers: dict[str, str] | None = None) -> dict[str, Any]:
@@ -687,17 +730,30 @@ def _modelos_gemini_a_usar(api_key: str) -> list[str]:
 
 
 def extraer_json_gemini(
-    data: bytes, jpeg: bytes | None = None, prompt: str | None = None
+    data: bytes,
+    jpeg: bytes | None = None,
+    prompt: str | None = None,
+    presupuesto: _PresupuestoVision | None = None,
 ) -> dict[str, Any] | None:
     api_key = _clave_gemini()
     if not api_key:
         return None
+    presupuesto = presupuesto or _PresupuestoVision(_PRESUPUESTO_VISION_S)
     texto_prompt = prompt or VISION_PROMPT
     modelos = _modelos_gemini_a_usar(api_key)
     jpeg = jpeg if jpeg is not None else _imagen_a_jpeg_bytes(data)
-    parsed, ocupados = extraer_json_gemini_sdk(jpeg, api_key, modelos, prompt=texto_prompt)
+    parsed, ocupados, sdk_activo = extraer_json_gemini_sdk(
+        jpeg, api_key, modelos, prompt=texto_prompt, presupuesto=presupuesto
+    )
     if parsed:
         return parsed
+    if sdk_activo:
+        print("[AL OCR] REST skipped: SDK ya recorrió los modelos", flush=True)
+        return None
+    if not presupuesto.puede_llamar():
+        print("[AL OCR] REST skipped: presupuesto agotado", flush=True)
+        _marcar_estado_ocr("provider_timeout")
+        return None
     imagen_b64 = base64.b64encode(jpeg).decode("ascii")
     ultimo_error = ""
     headers = {"Content-Type": "application/json", "x-goog-api-key": api_key}
@@ -718,7 +774,7 @@ def extraer_json_gemini(
             f"https://generativelanguage.googleapis.com/{version}/models/{modelo}:generateContent"
             f"?key={api_key}"
         )
-        payload = _post_json(url, cuerpo, headers)
+        payload = _post_json(url, cuerpo, headers, timeout=int(presupuesto.timeout_s()))
         if payload.get("error"):
             raise RuntimeError(payload["error"])
         candidatos = payload.get("candidates") or []
@@ -730,9 +786,13 @@ def extraer_json_gemini(
             raise RuntimeError("respuesta sin JSON de SKUs")
         return parsed_rest
 
-    for modelo in modelos[:4]:
+    for modelo in modelos[:_MODELOS_VISION_MAX]:
         if modelo in ocupados:
             continue
+        if not presupuesto.puede_llamar():
+            print("[AL OCR] REST skipped: presupuesto agotado", flush=True)
+            _marcar_estado_ocr("provider_timeout")
+            break
         for version in ("v1beta", "v1"):
             resultado, err = _con_reintentos_ocupado(
                 lambda m=modelo, v=version: _llamar_rest(m, v),
@@ -754,22 +814,34 @@ def extraer_json_gemini(
 
 
 def extraer_json_gemini_sdk(
-    data: bytes, api_key: str, modelos: list[str], prompt: str | None = None
-) -> tuple[dict[str, Any] | None, set[str]]:
+    data: bytes,
+    api_key: str,
+    modelos: list[str],
+    prompt: str | None = None,
+    presupuesto: _PresupuestoVision | None = None,
+) -> tuple[dict[str, Any] | None, set[str], bool]:
     ocupados: set[str] = set()
     texto_prompt = prompt or VISION_PROMPT
+    presupuesto = presupuesto or _PresupuestoVision(_PRESUPUESTO_VISION_S)
     try:
         from google import genai
         from google.genai import types
     except Exception:
-        return None, ocupados
+        return None, ocupados, False
     try:
-        cliente = genai.Client(api_key=api_key)
         jpeg = data if data[:2] == bytes((0xFF, 0xD8)) else _imagen_a_jpeg_bytes(data)
         parte = types.Part.from_bytes(data=jpeg, mime_type="image/jpeg")
         config = types.GenerateContentConfig(temperature=0, response_mime_type="application/json")
 
-        def _llamar_sdk(modelo: str) -> dict[str, Any]:
+        try:
+            cliente = genai.Client(
+                api_key=api_key,
+                http_options={"timeout": int(presupuesto.timeout_s() * 1000)},
+            )
+        except TypeError:
+            cliente = genai.Client(api_key=api_key)
+
+        def _llamar_sdk(modelo: str, timeout_s: float) -> dict[str, Any]:
             resp = cliente.models.generate_content(
                 model=modelo,
                 contents=[texto_prompt, parte],
@@ -780,20 +852,51 @@ def extraer_json_gemini_sdk(
                 raise RuntimeError("respuesta sin JSON de SKUs")
             return parsed_sdk
 
-        for modelo in modelos[:4]:
-            resultado, err = _con_reintentos_ocupado(lambda m=modelo: _llamar_sdk(m), modelo)
+        print(f"[AL OCR] budget_total: {int(presupuesto.total_s)}s", flush=True)
+        for modelo in modelos[:_MODELOS_VISION_MAX]:
+            if not presupuesto.puede_llamar():
+                print(
+                    f"[AL OCR] modelo skipped {modelo}: presupuesto restante "
+                    f"{presupuesto.restante_s():.1f}s",
+                    flush=True,
+                )
+                _marcar_estado_ocr("provider_timeout")
+                break
+            timeout_s = presupuesto.timeout_s()
+            print(
+                f"[AL OCR] model_try: {modelo} timeout={timeout_s:.0f}s "
+                f"remaining={presupuesto.restante_s():.1f}s",
+                flush=True,
+            )
+            t0 = time.perf_counter()
+            resultado, err = _con_reintentos_ocupado(
+                lambda m=modelo, t=timeout_s: _llamar_sdk(m, t),
+                modelo,
+            )
+            gasto = _ms(t0)
             if resultado:
+                print(f"[AL OCR] model_result: {modelo} ok {gasto}ms", flush=True)
                 print(f"[AL OCR] Visión Gemini respondió ({modelo}).", flush=True)
-                return resultado, ocupados
+                return resultado, ocupados, True
             if err is None:
                 continue
             print(f"[AL OCR] Gemini ({modelo}) falló: {_detalle_error(err)}", flush=True)
-            if _es_error_ocupado(err):
+            if _es_error_timeout(err):
+                _marcar_estado_ocr("provider_timeout")
+                print(f"[AL OCR] model_result: {modelo} timeout {gasto}ms", flush=True)
                 ocupados.add(modelo)
+                continue
+            if _es_error_ocupado(err):
+                _marcar_estado_ocr("provider_unavailable")
+                print(f"[AL OCR] model_result: {modelo} unavailable {gasto}ms", flush=True)
+                ocupados.add(modelo)
+                continue
+            print(f"[AL OCR] model_result: {modelo} error {gasto}ms", flush=True)
             continue
     except Exception as exc:
         print(f"[AL OCR] Cliente google.genai: {_detalle_error(exc)}", flush=True)
-    return None, ocupados
+        return None, ocupados, True
+    return None, ocupados, True
 
 
 def _log_estado_claves() -> None:
@@ -883,26 +986,38 @@ def inventario_desde_vision(payload: dict[str, Any], formato: str | None = None)
     filas = payload.get("skus") if isinstance(payload, dict) else payload
     if isinstance(payload, list):
         filas = payload
+    crudos = 0
     for fila in filas or []:
         if not isinstance(fila, dict):
             continue
         sku_crudo = fila.get("sku")
         if sku_crudo is None:
             sku_crudo = fila.get("SKU")
+        if sku_crudo in (None, ""):
+            continue
+        crudos += 1
+        print(f"[AL OCR] raw: {sku_crudo}", flush=True)
         sku = _sanear_sku(sku_crudo)
-        if not sku or len(sku) < 4 or sku in vistos:
+        if not sku or len(sku) < 4:
+            print(f"[AL OCR] rejected: {sku_crudo} reason=short", flush=True)
+            continue
+        if sku in vistos:
+            print(f"[AL OCR] rejected: {sku} reason=duplicate", flush=True)
             continue
         if _parece_encabezado_no_sku(sku):
+            print(f"[AL OCR] rejected: {sku} reason=header", flush=True)
             continue
         if _es_ruido_sku(sku):
-            continue
-        if sku.replace("-", "").isalpha():
+            print(f"[AL OCR] rejected: {sku} reason=noise", flush=True)
             continue
         qty = _qty_esperado_fila(fila)
         if qty <= 0:
+            print(f"[AL OCR] rejected: {sku} reason=qty", flush=True)
             continue
         vistos.add(sku)
+        print(f"[AL OCR] accepted: {sku}", flush=True)
         skus.append(_sku_item(sku, qty, ""))
+    print(f"[AL OCR] raw_skus: {crudos}", flush=True)
     contenedor = ""
     if isinstance(payload, dict):
         contenedor = str(payload.get("contenedor") or payload.get("trailer") or "").strip()
@@ -936,7 +1051,11 @@ def extraer_meta_validacion(payload: dict[str, Any] | None) -> dict[str, Any]:
     )
     if meta["declared_cases"] is None and isinstance(bloque, dict):
         meta["declared_cases"] = _entero_meta(
-            bloque.get("total_cases") or bloque.get("total_quantity") or bloque.get("Total Cases")
+            bloque.get("total_ordered")
+            or bloque.get("Total Ordered")
+            or bloque.get("total_cases")
+            or bloque.get("total_quantity")
+            or bloque.get("Total Cases")
         )
     return meta
 
@@ -1114,11 +1233,36 @@ def _jpeg_recorte_tabla(data: bytes) -> bytes:
 
 
 def _llamar_vision(
-    data: bytes, jpeg: bytes | None = None, prompt: str | None = None
+    data: bytes,
+    jpeg: bytes | None = None,
+    prompt: str | None = None,
+    presupuesto: _PresupuestoVision | None = None,
 ) -> dict[str, Any] | None:
-    return extraer_json_gemini(data, jpeg=jpeg, prompt=prompt) or extraer_json_openai(
-        data, jpeg=jpeg, prompt=prompt
-    )
+    presupuesto = presupuesto or _PresupuestoVision(_PRESUPUESTO_VISION_S)
+    if _clave_gemini():
+        t0 = time.perf_counter()
+        vision = extraer_json_gemini(data, jpeg=jpeg, prompt=prompt, presupuesto=presupuesto)
+        print(f"[AL OCR] Gemini: {_ms(t0)}ms", flush=True)
+        if vision:
+            print("[AL OCR] OpenAI: skipped", flush=True)
+            print("[AL OCR] Tesseract: skipped", flush=True)
+            print("[AL OCR] EasyOCR: skipped", flush=True)
+            return vision
+    else:
+        print("[AL OCR] Gemini: skipped", flush=True)
+    if _clave_openai() and presupuesto.puede_llamar():
+        t1 = time.perf_counter()
+        vision = extraer_json_openai(data, jpeg=jpeg, prompt=prompt, presupuesto=presupuesto)
+        print(f"[AL OCR] OpenAI: {_ms(t1)}ms", flush=True)
+        if vision:
+            print("[AL OCR] Tesseract: skipped", flush=True)
+            print("[AL OCR] EasyOCR: skipped", flush=True)
+            return vision
+    elif _clave_openai():
+        print("[AL OCR] OpenAI: skipped", flush=True)
+    else:
+        print("[AL OCR] OpenAI: skipped", flush=True)
+    return None
 
 
 def fusionar_skus_recuperados(
@@ -1150,6 +1294,7 @@ def recuperar_skus_faltantes(
     jpeg: bytes | None,
     inventario: dict[str, Any],
     formato: str,
+    presupuesto: _PresupuestoVision | None = None,
 ) -> tuple[list[dict[str, Any]], str]:
     """Segunda pasada dirigida: solo SKU ausentes. Un crop de tabla en PO."""
     conocidos = [str(item.get("sku")) for item in (inventario.get("skus") or []) if item.get("sku")]
@@ -1164,7 +1309,7 @@ def recuperar_skus_faltantes(
             print(f"[AL OCR] crop tabla falló ({exc}); se usa la hoja.", flush=True)
             recorte = jpeg
             estrategia = "full"
-    vision = _llamar_vision(data, jpeg=recorte, prompt=prompt)
+    vision = _llamar_vision(data, jpeg=recorte, prompt=prompt, presupuesto=presupuesto)
     if not vision:
         return [], estrategia
     parcial = inventario_desde_vision(vision, formato=formato)
@@ -1198,6 +1343,8 @@ def procesar_documento(data: bytes, formato: str | None = None) -> dict[str, Any
     """Visión (Gemini; OpenAI/Tesseract/EasyOCR solo si el anterior no sirve)."""
     global _ERRORES_VISION
     _ERRORES_VISION = []
+    _marcar_estado_ocr("no_skus", log=False)
+    presupuesto = _PresupuestoVision(_PRESUPUESTO_VISION_S)
     imagen = None
     tabla = None
     t_total = time.perf_counter()
@@ -1222,7 +1369,7 @@ def procesar_documento(data: bytes, formato: str | None = None) -> dict[str, Any
             skip_recompress = jpeg is data
             print("[AL OCR] Enviando hoja a visión (Gemini; OpenAI solo si falla)…", flush=True)
             t_vis = time.perf_counter()
-            vision = _llamar_vision(data, jpeg=jpeg)
+            vision = _llamar_vision(data, jpeg=jpeg, presupuesto=presupuesto)
             vision_ms = _ms(t_vis)
             if vision:
                 t_norm = time.perf_counter()
@@ -1247,11 +1394,11 @@ def procesar_documento(data: bytes, formato: str | None = None) -> dict[str, Any
                     print(f"[AL OCR] validator: {chequeo['validator_ms']}ms", flush=True)
                     print(f"[AL OCR] completeness: {chequeo['estado']}", flush=True)
                     recovered_n = 0
-                    if chequeo["estado"] == "INCOMPLETE":
+                    if chequeo["estado"] == "INCOMPLETE" and presupuesto.puede_llamar(5):
                         print("[AL OCR] recovery: triggered", flush=True)
                         t_rec = time.perf_counter()
                         recuperados, estrategia = recuperar_skus_faltantes(
-                            data, jpeg, invent_v, fmt
+                            data, jpeg, invent_v, fmt, presupuesto=presupuesto
                         )
                         invent_v["skus"], recovered_n = fusionar_skus_recuperados(
                             invent_v.get("skus") or [], recuperados
@@ -1259,8 +1406,14 @@ def procesar_documento(data: bytes, formato: str | None = None) -> dict[str, Any
                         print(f"[AL OCR] recovery: {estrategia} {_ms(t_rec)}ms", flush=True)
                         print(f"[AL OCR] recovered_skus: {recovered_n}", flush=True)
                         print(f"[AL OCR] final_skus: {len(invent_v['skus'])}", flush=True)
+                    elif chequeo["estado"] == "INCOMPLETE":
+                        print("[AL OCR] recovery: skipped budget", flush=True)
                     else:
                         print("[AL OCR] recovery: skipped", flush=True)
+                    if chequeo["estado"] == "INCOMPLETE":
+                        _marcar_estado_ocr("incomplete")
+                    else:
+                        _marcar_estado_ocr("success")
                     _log_ocr_tiempos(
                         prepare_ms=prepare_ms,
                         vision_ms=vision_ms,
@@ -1278,6 +1431,7 @@ def procesar_documento(data: bytes, formato: str | None = None) -> dict[str, Any
                 print(f"[AL OCR] Visión falló. Respaldo local ligero (Tesseract). Detalle: {detalle}", flush=True)
 
         t_fb = time.perf_counter()
+        print("[AL OCR] Tesseract: running", flush=True)
         texto = extraer_texto(data)
         inventario = parsear_texto(texto, formato=formato) if texto.strip() else {
             "contenedor": "",
@@ -1289,7 +1443,6 @@ def procesar_documento(data: bytes, formato: str | None = None) -> dict[str, Any
             item
             for item in (inventario.get("skus") or [])
             if item.get("sku")
-            and not str(item.get("sku", "")).replace("-", "").isalpha()
             and not _parece_encabezado_no_sku(str(item.get("sku")))
             and not _es_ruido_sku(str(item.get("sku")))
             and int(item.get("cantidad_esperada") or 0) > 0
@@ -1297,6 +1450,7 @@ def procesar_documento(data: bytes, formato: str | None = None) -> dict[str, Any
         if inventario.get("skus") and _lectura_local_confiable(inventario, texto):
             fallback = "tesseract"
             fallback_ms = _ms(t_fb)
+            _marcar_estado_ocr("success")
             _log_ocr_tiempos(
                 prepare_ms=prepare_ms,
                 vision_ms=vision_ms,
@@ -1480,14 +1634,17 @@ def _es_ruido_sku(token: str) -> bool:
         "PALLET",
         "DESCRIPTION",
         "DESC",
+        "LOT",
+        "LOTO",
     }
-    limpio = _sanear_sku(token).replace("-", "")
-    if limpio in ruido:
-        return True
-    if limpio.isalpha():
+    sku = _sanear_sku(token)
+    limpio = sku.replace("-", "")
+    if not limpio or limpio in ruido or sku in ruido:
         return True
     if len(limpio) < 6:
         return True
+    if limpio.isalpha():
+        return not bool(re.fullmatch(r"[A-Z]{6,16}(?:-[A-Z]{2,4})+", sku))
     return False
 
 

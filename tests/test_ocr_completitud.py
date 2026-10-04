@@ -96,6 +96,61 @@ class CompletitudPurchaseTests(unittest.TestCase):
         self.assertIsNone(chequeo["expected_rows"])
 
 
+class PurchaseOrderSkuTests(unittest.TestCase):
+    ORACLE = [
+        ("AXCLDYHEN-SS", 70),
+        ("AXCLDYDAR20-SS", 24),
+        ("AXCLDYDAR46-SS", 12),
+        ("AXCLDYHEN24-AB", 60),
+        ("AXCLDYHEN36-SS", 35),
+        ("AXCLDYMWS20-SS", 14),
+        ("AXCLDYMUR28-AB", 12),
+        ("AXCLDYREE36-SS", 35),
+    ]
+
+    def test_acepta_sku_solo_letras_con_sufijo(self):
+        self.assertFalse(ocr._es_ruido_sku("AXCLDYHEN-SS"))
+        invent = ocr.inventario_desde_vision(
+            {"contenedor": "HAMU2899883", "skus": [{"sku": "AXCLDYHEN-SS", "esperado": 70}]},
+            formato="A",
+        )
+        self.assertEqual(invent["skus"][0]["sku"], "AXCLDYHEN-SS")
+        self.assertEqual(invent["skus"][0]["cantidad_esperada"], 70)
+
+    def test_sigue_rechazando_encabezados(self):
+        for ruido in ("PRODUCT", "DESCRIPTION", "QTY", "LOT", "HENNESSY"):
+            self.assertTrue(ocr._es_ruido_sku(ruido), ruido)
+
+    def test_oracle_ocho_filas_y_total_ordered(self):
+        payload = {
+            "contenedor": "HAMU2899883",
+            "skus": [{"sku": sku, "esperado": qty} for sku, qty in self.ORACLE],
+            "_validation": {"total_ordered": 262},
+        }
+        invent = ocr.inventario_desde_vision(payload, formato="A")
+        meta = ocr.extraer_meta_validacion(payload)
+        pares = [(item["sku"], item["cantidad_esperada"]) for item in invent["skus"]]
+        self.assertEqual(pares, list(self.ORACLE))
+        self.assertEqual(sum(q for _, q in pares), 262)
+        chequeo = ocr.evaluar_completitud(invent, meta, formato="A")
+        self.assertEqual(chequeo["estado"], "OK")
+        self.assertEqual(meta["declared_cases"], 262)
+        self.assertNotIn("_validation", invent)
+
+    def test_sin_primer_sku_queda_incompleta(self):
+        payload = {
+            "skus": [{"sku": sku, "esperado": qty} for sku, qty in self.ORACLE[1:]],
+            "_validation": {"total_ordered": 262},
+        }
+        invent = ocr.inventario_desde_vision(payload, formato="A")
+        chequeo = ocr.evaluar_completitud(
+            invent, ocr.extraer_meta_validacion(payload), formato="A"
+        )
+        self.assertEqual(len(invent["skus"]), 7)
+        self.assertEqual(sum(i["cantidad_esperada"] for i in invent["skus"]), 192)
+        self.assertEqual(chequeo["estado"], "INCOMPLETE")
+
+
 class FusionYMetaTests(unittest.TestCase):
     def test_fusion_deduplica_y_conserva_cantidad(self):
         primero = [ocr._sku_item("AAA11111", 10)]
@@ -145,7 +200,7 @@ class RecuperacionSimuladaTests(unittest.TestCase):
         }
         prompts: list[str | None] = []
 
-        def fake_vision(_data, jpeg=None, prompt=None):
+        def fake_vision(_data, jpeg=None, prompt=None, presupuesto=None):
             prompts.append(prompt)
             if prompt and "already found these SKUs" in prompt:
                 return segunda

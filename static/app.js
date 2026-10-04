@@ -128,6 +128,8 @@
     commandArmed: false,
     recognition: null,
     speaking: false,
+    speakingSince: 0,
+    ttsSafetyTimer: null,
     blocked: false,
     restartTimer: null,
     transcriptTimer: null,
@@ -2151,7 +2153,15 @@
   }
 
   function reanudarTrasTTS() {
+    if (state.ttsSafetyTimer) {
+      clearTimeout(state.ttsSafetyTimer);
+      state.ttsSafetyTimer = null;
+    }
+    const seguiaArmado = state.commandArmed;
     state.speaking = false;
+    state.speakingSince = 0;
+    if (seguiaArmado) armarVentanaComando();
+    console.log("[AL VOZ] post-TTS commandArmed=", state.commandArmed, "skuActivo=", state.skuActivo || "null");
     if (!state.listening || state.blocked) return;
     setMic(
       state.commandArmed ? "command" : "listen",
@@ -2187,11 +2197,16 @@
   }
 
   function hablar(texto) {
+    if (state.ttsSafetyTimer) {
+      clearTimeout(state.ttsSafetyTimer);
+      state.ttsSafetyTimer = null;
+    }
     if (!window.speechSynthesis) {
       reanudarTrasTTS();
       return;
     }
     state.speaking = true;
+    state.speakingSince = Date.now();
     pauseRecognition();
     try {
       window.speechSynthesis.cancel();
@@ -2199,13 +2214,18 @@
     } catch {
       /* noop */
     }
+    const finish = () => {
+      if (!state.speaking) return;
+      reanudarTrasTTS();
+    };
     const utter = new SpeechSynthesisUtterance(textoParaVoz(texto));
     utter.lang = idiomaReconocimiento();
     utter.rate = 1.02;
     utter.volume = 1;
-    utter.onend = reanudarTrasTTS;
-    utter.onerror = reanudarTrasTTS;
+    utter.onend = finish;
+    utter.onerror = finish;
     window.speechSynthesis.speak(utter);
+    state.ttsSafetyTimer = setTimeout(finish, 2800);
     try {
       window.speechSynthesis.resume();
     } catch {
@@ -2589,9 +2609,43 @@
     await aplicarConteo(modo, cantidad, objetivo);
   }
 
+  function logPipelineVoz(info) {
+    console.log("[AL VOZ]", {
+      transcripcion_final: info.raw,
+      wake_detectado: Boolean(info.wake),
+      commandArmed: Boolean(state.commandArmed),
+      texto_comando: info.texto || "",
+      intencion: info.intencion || "NONE",
+      cantidad: info.cantidad,
+      skuActivo: state.skuActivo || "null",
+      accion: info.accion || "",
+      motivo: info.motivo || "",
+    });
+  }
+
+  function registrarFinalEstable(texto) {
+    const limpio = String(texto || "").trim();
+    if (!limpio) return;
+    const live = $("registro-voz-live");
+    if (live) {
+      live.textContent = limpio;
+      live.classList.remove("is-parcial");
+    }
+    const expander = $("chat-expander");
+    if (expander) expander.open = true;
+  }
+
   async function procesarComando(raw) {
     const texto = convertirNumerosHablados(quitarWake(raw));
+    registrarFinalEstable(raw);
     if (!texto) {
+      logPipelineVoz({
+        raw,
+        wake: true,
+        texto: "",
+        intencion: "WAKE",
+        accion: "armarVentanaComando",
+      });
       armarVentanaComando();
       await pushChat("operador", raw);
       setMic("command", "Te escucho");
@@ -2608,17 +2662,37 @@
       if (!hit) {
         if (autorizadoPorWake && pareceSufijoSkuImplícito(texto)) {
           const sufijo = normalizarSufijoSkuVoz(texto);
-          console.log("[AL VOZ] transcripcion:", raw, "intencion: BUSCAR_IMPLICITO resto:", texto, "sufijo:", sufijo);
+          logPipelineVoz({
+            raw,
+            wake: contieneWake(raw),
+            texto,
+            intencion: "BUSCAR_IMPLICITO",
+            accion: "buscarSufijo",
+          });
           await buscarSufijo(texto);
           return;
         }
+        logPipelineVoz({
+          raw,
+          wake: contieneWake(raw),
+          texto,
+          intencion: "NONE",
+          motivo: "alias_no_reconocido",
+        });
         await responder("No reconocí el comando. Prueba con buscar, suma o edita.");
         return;
       }
 
       if (hit.tipo === "BUSCAR") {
         const sufijo = normalizarSufijoSkuVoz(resto);
-        console.log("[AL VOZ] transcripcion:", raw, "intencion: BUSCAR resto:", resto, "sufijo:", sufijo);
+        logPipelineVoz({
+          raw,
+          wake: contieneWake(raw),
+          texto,
+          intencion: "BUSCAR",
+          accion: "buscarSufijo",
+          motivo: sufijo ? "" : "sin_sufijo",
+        });
         if (!sufijo) {
           await responder("No detecté el sufijo del SKU. Dicta el final del código, por ejemplo: buscar 20 SS.");
           return;
@@ -2629,11 +2703,21 @@
 
       if (hit.tipo === "SUMAR" || hit.tipo === "EDITAR") {
         const { cantidad, sufijo } = parsearCantidadYSufijo(resto);
+        const modo = hit.tipo === "SUMAR" ? "sumar" : "editar";
+        logPipelineVoz({
+          raw,
+          wake: contieneWake(raw),
+          texto,
+          intencion: hit.tipo,
+          cantidad,
+          accion: `aplicarConteoConSufijo("${modo}")`,
+          motivo: cantidad === null ? "sin_cantidad" : state.skuActivo || sufijo ? "" : "sin_sku",
+        });
         if (cantidad === null) {
           await responder("No entendí la cantidad. Dicta un número, por ejemplo: suma 15.");
           return;
         }
-        await aplicarConteoConSufijo(hit.tipo === "SUMAR" ? "sumar" : "editar", cantidad, sufijo);
+        await aplicarConteoConSufijo(modo, cantidad, sufijo);
         return;
       }
 
@@ -2704,12 +2788,15 @@
       linea.textContent = limpio;
       banner.classList.remove("hidden");
     }
-    pintarRegistroVoz(limpio, parcial);
     console.log(parcial ? "[AL STT parcial]" : "[AL STT final]", limpio);
     if (state.transcriptTimer) clearTimeout(state.transcriptTimer);
     state.transcriptTimer = setTimeout(() => {
       if (banner) banner.classList.add("hidden");
     }, parcial ? 1200 : 2800);
+  }
+
+  function speakingAtascado() {
+    return Boolean(state.speaking && state.speakingSince && Date.now() - state.speakingSince > 2800);
   }
 
   function registrarStt(entrada) {
@@ -2954,10 +3041,20 @@
         });
         if (finalText) state.sttFailStreak = 0;
       }
-      if (!finalText || state.speaking) return;
-      if (state.commandArmed || contieneWake(finalText) || state.finalPendiente) {
-        recibirFinalEstable(finalText);
+      if (speakingAtascado()) {
+        console.log("[AL VOZ] speaking atascado → reanudarTrasTTS");
+        reanudarTrasTTS();
       }
+      if (!finalText) return;
+      if (state.speaking) {
+        console.log("[AL VOZ] final ignorado: speaking=true", finalText.trim());
+        return;
+      }
+      if (!(state.commandArmed || contieneWake(finalText) || state.finalPendiente)) {
+        console.log("[AL VOZ] final ignorado: sin wake ni commandArmed", finalText.trim());
+        return;
+      }
+      recibirFinalEstable(finalText);
     };
     rec.onerror = (event) => {
       const error = event && event.error;

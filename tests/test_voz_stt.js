@@ -25,9 +25,10 @@ must(/alternativas/, "se registran alternativas");
 must(/error === "network" \|\| error === "audio-capture"/, "backoff de errores");
 must(/function pedirPermisoMicrofono/, "no hay stream paralelo permanente");
 must(/window\.AL_STT_DEBUG/, "debug de transcripciones");
-must(/function pintarRegistroVoz/, "Registro de voz recibe transcripción");
+must(/function registrarFinalEstable/, "Registro E recibe el final estable");
 must(/function sincronizarVisibilidadSkuVoz/, "voz sincroniza filtro de B");
-must(/heardFinal/, "finales se muestran aunque no se ejecuten");
+must(/speakingAtascado/, "watchdog de TTS en iPhone");
+must(/ttsSafetyTimer/, "timeout de seguridad TTS");
 
 const WAKE_ALIASES = ["oye al", "oye aele", "oye ale", "oye a l", "hey al", "ok al", "okay al"];
 const COMANDOS = {
@@ -266,8 +267,15 @@ assert.strictEqual(clasificar("20 CS", { commandArmed: true }).sufijo, "20CS");
 assert.strictEqual(clasificar("20", { commandArmed: true }).tipo, "RUIDO", "20 solo no es SUMAR/FIJAR ni sufijo implícito");
 assert.strictEqual(clasificar("el camion paso", { commandArmed: true }).tipo, "RUIDO");
 assert.strictEqual(clasificar("suma 3", { commandArmed: true }).tipo, "SUMAR");
+assert.strictEqual(clasificar("Oye AL suma 3").tipo, "SUMAR");
+assert.strictEqual(clasificar("sumar 3", { commandArmed: true }).tipo, "RUIDO", "sumar no es alias");
 assert.strictEqual(clasificar("fija en 8", { commandArmed: true }).tipo, "EDITAR");
+assert.strictEqual(clasificar("Oye AL fija en 8").tipo, "EDITAR");
+assert.strictEqual(clasificar("fijar 8", { commandArmed: true }).tipo, "RUIDO", "fijar no es alias");
 assert.strictEqual(clasificar("estatus", { commandArmed: true }).tipo, "ESTATUS");
+assert.strictEqual(clasificar("suma 3").tipo, "SUMAR");
+assert.ok(fraseOperativaEstable("suma 3"), "suma 3 no debe quedar en hold 380ms");
+assert.ok(fraseOperativaEstable("fija en 8"), "fija en 8 no debe quedar en hold 380ms");
 assert.ok(pareceSufijoSkuImplícito("20 SS"));
 assert.ok(pareceSufijoSkuImplícito("20-SS"));
 assert.ok(pareceSufijoSkuImplícito("20SS"));

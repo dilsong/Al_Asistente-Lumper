@@ -1142,10 +1142,37 @@ tr.exceso {
 .chat-summary-title {
   font-weight: 800;
   font-size: 1.05rem;
+  flex-shrink: 0;
+}
+
+.registro-voz-live {
+  flex: 1;
+  min-width: 0;
+  font-weight: 700;
+  color: #e0f2fe;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.registro-voz-live:empty {
+  display: none;
+}
+
+.registro-voz-live.is-parcial,
+.bubble.is-live.is-parcial {
+  opacity: 0.75;
+}
+
+.bubble.is-live {
+  border: 1px dashed #38bdf8;
+  background: #0f172a;
+  color: #e0f2fe;
 }
 
 .chat-summary #wake-hint {
   margin-left: auto;
+  flex-shrink: 0;
 }
 
 .chat-chevron {

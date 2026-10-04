@@ -2106,9 +2106,14 @@
 
   function renderChat() {
     const log = $("chat-log");
+    if (!log) return;
     log.innerHTML = state.chat
       .map((msg) => `<div class="bubble ${msg.rol}">${escapar(msg.texto)}</div>`)
       .join("");
+    const live = $("registro-voz-live");
+    if (live && live.textContent) {
+      asegurarLineaRegistroVoz(live.textContent, live.classList.contains("is-parcial"));
+    }
     log.scrollTop = log.scrollHeight;
   }
 
@@ -2421,6 +2426,15 @@
     return mejorAlias(texto, comandosPorDefecto());
   }
 
+  function sincronizarVisibilidadSkuVoz(dictado) {
+    const visible = String(dictado || "").trim();
+    state.filtro = visible;
+    const input = $("tabla-filtro");
+    if (input) input.value = visible;
+    state.filtroEstadoSku = "todos";
+    pintarFiltroEstadoSku();
+  }
+
   async function buscarSufijo(dictado) {
     const interpretado = normalizarSufijoSkuVoz(dictado);
     const data = buscarPorSufijoLocal(dictado);
@@ -2437,11 +2451,15 @@
       "sku:",
       skuLog || "none"
     );
+    sincronizarVisibilidadSkuVoz(dictado);
     if (data.unica && data.coincidencias[0]) {
       seleccionarSku(data.coincidencias[0].sku);
       $("sku-modal").classList.add("hidden");
     } else if (data.requiere_desambiguacion) {
       mostrarCoincidencias(data);
+      renderTabla();
+    } else {
+      renderTabla();
     }
     await responder(data.mensaje, { sufijo: data.sufijo, total: data.total });
     return data;
@@ -2575,6 +2593,7 @@
     const texto = convertirNumerosHablados(quitarWake(raw));
     if (!texto) {
       armarVentanaComando();
+      await pushChat("operador", raw);
       setMic("command", "Te escucho");
       await responder("Te escucho.");
       return;
@@ -2650,18 +2669,46 @@
     $("mic-fab").setAttribute("aria-pressed", state.listening ? "true" : "false");
   }
 
+  function asegurarLineaRegistroVoz(texto, parcial) {
+    const log = $("chat-log");
+    if (!log) return;
+    let linea = $("registro-voz-linea");
+    if (!linea) {
+      linea = document.createElement("div");
+      linea.id = "registro-voz-linea";
+      linea.className = "bubble operador is-live";
+      log.appendChild(linea);
+    }
+    linea.textContent = texto;
+    linea.classList.toggle("is-parcial", Boolean(parcial));
+    log.scrollTop = log.scrollHeight;
+  }
+
+  function pintarRegistroVoz(texto, parcial) {
+    const limpio = String(texto || "").trim();
+    if (!limpio) return;
+    const live = $("registro-voz-live");
+    if (live) {
+      live.textContent = limpio;
+      live.classList.toggle("is-parcial", Boolean(parcial));
+    }
+    asegurarLineaRegistroVoz(limpio, parcial);
+  }
+
   function mostrarTranscripcion(texto, parcial) {
     const banner = $("live-transcript");
     const linea = $("live-transcript-text");
-    if (!banner || !linea) return;
     const limpio = String(texto || "").trim();
     if (!limpio) return;
-    linea.textContent = limpio;
-    banner.classList.remove("hidden");
+    if (banner && linea) {
+      linea.textContent = limpio;
+      banner.classList.remove("hidden");
+    }
+    pintarRegistroVoz(limpio, parcial);
     console.log(parcial ? "[AL STT parcial]" : "[AL STT final]", limpio);
     if (state.transcriptTimer) clearTimeout(state.transcriptTimer);
     state.transcriptTimer = setTimeout(() => {
-      banner.classList.add("hidden");
+      if (banner) banner.classList.add("hidden");
     }, parcial ? 1200 : 2800);
   }
 
@@ -2865,6 +2912,7 @@
     };
     rec.onresult = (event) => {
       let parcial = "";
+      let heardFinal = "";
       let finalText = "";
       const alternativas = [];
       for (let i = event.resultIndex; i < event.results.length; i += 1) {
@@ -2882,6 +2930,7 @@
           parcial += piece;
           continue;
         }
+        heardFinal += piece;
         if (!pasaFiltrosVoz(piece, confidence)) continue;
         finalText += piece;
       }
@@ -2895,15 +2944,15 @@
           ms,
         });
       }
-      if (finalText) {
-        mostrarTranscripcion(finalText, false);
+      if (heardFinal) {
+        mostrarTranscripcion(heardFinal, false);
         registrarStt({
           tipo: "final",
-          transcripcion: finalText.trim(),
+          transcripcion: heardFinal.trim(),
           alternativas: alternativas.filter((item, idx, arr) => arr.indexOf(item) === idx),
           ms,
         });
-        state.sttFailStreak = 0;
+        if (finalText) state.sttFailStreak = 0;
       }
       if (!finalText || state.speaking) return;
       if (state.commandArmed || contieneWake(finalText) || state.finalPendiente) {

@@ -202,6 +202,26 @@ check("implícito 20 no es sufijo ni SUMAR", !pareceSufijoSkuImplícito("20") &&
 check("implícito 20 ZZ sin match", buscar("20 ZZ", base).modo === "ninguno");
 check("regresion fija en 8", parsear("fija en 8").hit && parsear("fija en 8").hit.tipo === "EDITAR");
 
+function visibleEnB(sku, filtroTexto, filtroEstado, estadoSku) {
+  const q = String(filtroTexto || "").trim();
+  const qNorm = q.toUpperCase().replace(/[^A-Z0-9]/g, "");
+  const skuNorm = String(sku).toUpperCase().replace(/[^A-Z0-9]/g, "");
+  const pasaTexto = !qNorm || skuNorm.endsWith(qNorm);
+  if (!pasaTexto) return false;
+  if (!filtroEstado || filtroEstado === "todos") return true;
+  if (filtroEstado === "pendiente") return estadoSku === "pendiente";
+  if (filtroEstado === "en_proceso") return estadoSku === "en_proceso";
+  return true;
+}
+check(
+  "B oculto por filtro viejo 24 + pendiente",
+  !visibleEnB("AXCLDYMWS20-SS", "24", "pendiente", "en_proceso")
+);
+check(
+  "B visible tras voz 20 SS + Todos",
+  visibleEnB("AXCLDYMWS20-SS", "20 SS", "todos", "en_proceso")
+);
+
 if (fallos) {
   console.error(`FALLÓ ${fallos} caso(s)`);
   process.exit(1);

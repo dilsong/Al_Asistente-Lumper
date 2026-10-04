@@ -25,6 +25,9 @@ must(/alternativas/, "se registran alternativas");
 must(/error === "network" \|\| error === "audio-capture"/, "backoff de errores");
 must(/function pedirPermisoMicrofono/, "no hay stream paralelo permanente");
 must(/window\.AL_STT_DEBUG/, "debug de transcripciones");
+must(/function pintarRegistroVoz/, "Registro de voz recibe transcripción");
+must(/function sincronizarVisibilidadSkuVoz/, "voz sincroniza filtro de B");
+must(/heardFinal/, "finales se muestran aunque no se ejecuten");
 
 const WAKE_ALIASES = ["oye al", "oye aele", "oye ale", "oye a l", "hey al", "ok al", "okay al"];
 const COMANDOS = {

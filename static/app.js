@@ -84,6 +84,10 @@
   const LS_HISTORIAL = "historialContenedores";
   const LS_OPERADOR = "al_operador_sesion";
   const KG_A_LBS = 2.20462;
+  const STT_ESTABLE_MS = 380;
+  const WAKE_VENTANA_MS = 6500;
+  const STT_RESTART_MS = 220;
+  const STT_RESTART_MAX_MS = 4000;
   const CATALOGO_COMANDOS = [
     { tipo: "SUMAR", titulo: "Sumar cajas", ejemplo: "suma [X]" },
     { tipo: "ESTATUS", titulo: "Consultar resumen", ejemplo: "estatus / status" },
@@ -127,7 +131,16 @@
     blocked: false,
     restartTimer: null,
     transcriptTimer: null,
+    finalPendiente: "",
+    finalTimer: null,
+    wakeTimer: null,
+    sttStarting: false,
+    sttFailStreak: 0,
+    sttLog: [],
+    sttUtteranceAt: 0,
+    idiomaOverride: null,
     audioStream: null,
+    micPermiso: false,
     cierreRegistrado: false,
     historialFecha: "",
     modoSumarHoja: false,
@@ -1236,7 +1249,8 @@
   }
 
   function buscarPorSufijoLocal(dictado) {
-    const codigo = normalizarCodigo(dictado);
+    const codigo = normalizarSufijoSkuVoz(dictado);
+    const mostrado = String(dictado || "").trim() || codigo;
     if (!codigo) {
       return {
         sufijo: "",
@@ -1244,19 +1258,36 @@
         total: 0,
         unica: false,
         requiere_desambiguacion: false,
+        modo: "ninguno",
+        correccion: "",
         mensaje: "No se dictó ningún código.",
       };
     }
     const minimo = Number(state.config && state.config.sufijo_default) || 2;
     const sufijo = codigo.length >= minimo ? codigo : codigo;
-    const hits = (state.inventario.skus || []).filter((item) => coincideSufijoSku(item.sku, sufijo));
+    const items = state.inventario.skus || [];
+    const exactos = items.filter((item) => coincideSufijoSku(item.sku, sufijo));
+    let hits = exactos;
+    let modo = exactos.length ? "exacto" : "ninguno";
+    let correccion = "";
+    if (!exactos.length) {
+      const rec = recuperarSufijoFonicoSku(sufijo, items);
+      if (rec.modo === "fonetico" || rec.modo === "ambiguo") {
+        hits = rec.coincidencias;
+        modo = rec.modo;
+        correccion = rec.correccion || "";
+      }
+    }
     const total = hits.length;
-    let mensaje = `Ningún SKU termina en ${sufijo}.`;
+    let mensaje = `Ningún SKU termina en ${mostrado}.`;
     if (total === 1) {
       const sku = hits[0];
       mensaje = `SKU ${sku.sku} confirmado. Esperadas ${sku.cantidad_esperada} cajas, contadas ${sku.contador}.`;
     } else if (total > 1) {
-      mensaje = `Hay ${total} productos que terminan en ${sufijo}. Dicta un carácter más o selecciónalo en pantalla.`;
+      mensaje =
+        modo === "ambiguo"
+          ? `Encontré más de una posibilidad para ${mostrado}.`
+          : `Hay ${total} productos que terminan en ${sufijo}. Dicta un carácter más o selecciónalo en pantalla.`;
     }
     return {
       sufijo,
@@ -1264,6 +1295,8 @@
       total,
       unica: total === 1,
       requiere_desambiguacion: total > 1,
+      modo,
+      correccion,
       mensaje,
       contenedor: state.inventario.contenedor || "",
     };
@@ -1582,6 +1615,8 @@
   }
 
   function idiomaReconocimiento() {
+    const override = String(state.idiomaOverride || "").trim();
+    if (override === "es-ES" || override === "es-US") return override;
     const cfg = String((state.config && state.config.idioma) || "").trim();
     if (cfg === "es-ES" || cfg === "es-US") return cfg;
     return "es-ES";
@@ -1646,29 +1681,24 @@
     return true;
   }
 
-  async function activarMicrofonoIndustrial() {
-    if (state.audioStream && state.audioStream.active) return state.audioStream;
+  async function pedirPermisoMicrofono() {
+    if (state.micPermiso) return true;
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      console.log("[AL STT] getUserMedia no disponible; se usa el micrófono del reconocimiento");
-      return null;
+      console.log("[AL STT] getUserMedia no disponible; SpeechRecognition usa su propio micrófono");
+      state.micPermiso = true;
+      return true;
     }
-    const constraints = {
+    const stream = await navigator.mediaDevices.getUserMedia({
       audio: {
         echoCancellation: true,
         noiseSuppression: true,
         autoGainControl: true,
       },
-    };
-    const stream = await navigator.mediaDevices.getUserMedia(constraints);
-    state.audioStream = stream;
-    const track = stream.getAudioTracks()[0];
-    const settings = track && track.getSettings ? track.getSettings() : {};
-    console.log("[AL STT] getUserMedia industrial", {
-      echoCancellation: settings.echoCancellation !== false,
-      noiseSuppression: settings.noiseSuppression !== false,
-      autoGainControl: settings.autoGainControl !== false,
     });
-    return stream;
+    stream.getTracks().forEach((track) => track.stop());
+    state.micPermiso = true;
+    console.log("[AL STT] permiso concedido; la captura la hace SpeechRecognition, no un stream paralelo");
+    return true;
   }
 
   function liberarMicrofono() {
@@ -2271,6 +2301,86 @@
     return digitos ? digitos.join("") : "";
   }
 
+  function normalizarLetrasHabladasSku(texto) {
+    let t = normalizar(texto);
+    const frases = [
+      [/\bese\s+ese\b/g, "ss"],
+      [/\ba\s+be\b/g, "ab"],
+      [/\ba\s+b\b/g, "ab"],
+      [/\bs\s+s\b/g, "ss"],
+    ];
+    frases.forEach(([patron, letra]) => {
+      t = t.replace(patron, letra);
+    });
+    t = t.replace(/\bese\b/g, "s");
+    t = t.replace(/\bbe\b/g, "b");
+    return t.replace(/\s+/g, " ").trim();
+  }
+
+  function normalizarSufijoSkuVoz(texto) {
+    const conNumeros = convertirNumerosHablados(texto || "");
+    const conLetras = normalizarLetrasHabladasSku(conNumeros);
+    const limpio = quitarMuletillas(conLetras);
+    return String(limpio)
+      .toUpperCase()
+      .replace(/[^A-Z0-9]/g, "");
+  }
+
+  function pareceSufijoSkuImplícito(texto) {
+    return /^\d+[A-Z]{2,}$/.test(normalizarSufijoSkuVoz(texto));
+  }
+
+  function distanciaEdicion(a, b) {
+    const s = String(a || "");
+    const t = String(b || "");
+    if (Math.abs(s.length - t.length) > 1) return 99;
+    const filas = Array.from({ length: s.length + 1 }, () => new Array(t.length + 1).fill(0));
+    for (let i = 0; i <= s.length; i += 1) filas[i][0] = i;
+    for (let j = 0; j <= t.length; j += 1) filas[0][j] = j;
+    for (let i = 1; i <= s.length; i += 1) {
+      for (let j = 1; j <= t.length; j += 1) {
+        const costo = s[i - 1] === t[j - 1] ? 0 : 1;
+        filas[i][j] = Math.min(filas[i - 1][j] + 1, filas[i][j - 1] + 1, filas[i - 1][j - 1] + costo);
+      }
+    }
+    return filas[s.length][t.length];
+  }
+
+  function recuperarSufijoFonicoSku(codigo, items) {
+    const compacto = String(codigo || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+    const partes = compacto.match(/^(\d+)([A-Z]{2,})$/);
+    if (!partes) {
+      return { coincidencias: [], correccion: "", modo: "none" };
+    }
+    const base = partes[1];
+    const letras = partes[2];
+    const candidatos = [];
+    (items || []).forEach((item) => {
+      const cola = normalizarCodigo(item && item.sku).match(/(\d+)([A-Z]{2,})$/);
+      if (!cola || cola[1] !== base) return;
+      if (cola[2].length !== letras.length) return;
+      const dist = distanciaEdicion(letras, cola[2]);
+      if (dist > 0 && dist <= 1) {
+        candidatos.push({ item, sufijo: `${base}${cola[2]}`, dist });
+      }
+    });
+    if (candidatos.length === 1) {
+      return {
+        coincidencias: [candidatos[0].item],
+        correccion: candidatos[0].sufijo,
+        modo: "fonetico",
+      };
+    }
+    if (candidatos.length > 1) {
+      return {
+        coincidencias: candidatos.map((c) => c.item),
+        correccion: "",
+        modo: "ambiguo",
+      };
+    }
+    return { coincidencias: [], correccion: "", modo: "none" };
+  }
+
   function parsearCantidadYSufijo(resto) {
     const limpio = quitarMuletillas(convertirNumerosHablados(resto));
     const nums = String(limpio).match(/\d+/g) || [];
@@ -2281,13 +2391,20 @@
     };
   }
 
+  function aliasesWake() {
+    const cfgWake = normalizar((state.config && state.config.wake_word) || "oye al");
+    return [...new Set([...WAKE_ALIASES, cfgWake])].sort((a, b) => b.length - a.length);
+  }
+
   function quitarWake(texto) {
     let t = normalizar(texto);
-    for (const alias of WAKE_ALIASES) {
-      if (t.startsWith(alias)) t = t.slice(alias.length).trim();
+    for (const alias of aliasesWake()) {
+      const idx = t.indexOf(alias);
+      if (idx >= 0) {
+        t = t.slice(idx + alias.length).replace(/\s+/g, " ").trim();
+        break;
+      }
     }
-    const cfgWake = normalizar((state.config && state.config.wake_word) || "oye al");
-    if (t.startsWith(cfgWake)) t = t.slice(cfgWake.length).trim();
     return t;
   }
 
@@ -2305,7 +2422,21 @@
   }
 
   async function buscarSufijo(dictado) {
+    const interpretado = normalizarSufijoSkuVoz(dictado);
     const data = buscarPorSufijoLocal(dictado);
+    const skuLog = data.coincidencias[0] && data.coincidencias[0].sku;
+    console.log(
+      "[AL VOZ] transcripcion:",
+      dictado,
+      "normalizado:",
+      interpretado,
+      "exacto:",
+      data.modo === "exacto" ? interpretado : "none",
+      "correccion:",
+      data.correccion || "none",
+      "sku:",
+      skuLog || "none"
+    );
     if (data.unica && data.coincidencias[0]) {
       seleccionarSku(data.coincidencias[0].sku);
       $("sku-modal").classList.add("hidden");
@@ -2443,7 +2574,7 @@
   async function procesarComando(raw) {
     const texto = convertirNumerosHablados(quitarWake(raw));
     if (!texto) {
-      state.commandArmed = true;
+      armarVentanaComando();
       setMic("command", "Te escucho");
       await responder("Te escucho.");
       return;
@@ -2452,12 +2583,14 @@
     await pushChat("operador", raw);
     const hit = matchComando(texto);
     const resto = hit ? texto.replace(hit.alias, " ").replace(/\s+/g, " ").trim() : texto;
+    const autorizadoPorWake = state.commandArmed || contieneWake(raw);
 
     try {
       if (!hit) {
-        const sufijo = extraerSufijoNumerico(quitarMuletillas(resto));
-        if (sufijo) {
-          await buscarSufijo(sufijo);
+        if (autorizadoPorWake && pareceSufijoSkuImplícito(texto)) {
+          const sufijo = normalizarSufijoSkuVoz(texto);
+          console.log("[AL VOZ] transcripcion:", raw, "intencion: BUSCAR_IMPLICITO resto:", texto, "sufijo:", sufijo);
+          await buscarSufijo(texto);
           return;
         }
         await responder("No reconocí el comando. Prueba con buscar, suma o edita.");
@@ -2465,12 +2598,13 @@
       }
 
       if (hit.tipo === "BUSCAR") {
-        const sufijo = extraerSufijoNumerico(quitarMuletillas(resto));
+        const sufijo = normalizarSufijoSkuVoz(resto);
+        console.log("[AL VOZ] transcripcion:", raw, "intencion: BUSCAR resto:", resto, "sufijo:", sufijo);
         if (!sufijo) {
-          await responder("No detecté dígitos del SKU. Dicta el sufijo numérico, por ejemplo: buscar 45.");
+          await responder("No detecté el sufijo del SKU. Dicta el final del código, por ejemplo: buscar 20 SS.");
           return;
         }
-        await buscarSufijo(sufijo);
+        await buscarSufijo(resto);
         return;
       }
 
@@ -2504,7 +2638,7 @@
       await responder(error.message || "No pude completar la orden.");
     } finally {
       if (texto) {
-        state.commandArmed = false;
+        desarmarVentanaComando();
         if (state.listening && !state.speaking) setMic("listen", "Escuchando “Oye AL”");
       }
     }
@@ -2531,6 +2665,119 @@
     }, parcial ? 1200 : 2800);
   }
 
+  function registrarStt(entrada) {
+    const fila = {
+      t: new Date().toISOString(),
+      lang: idiomaReconocimiento(),
+      ...entrada,
+    };
+    state.sttLog.push(fila);
+    if (state.sttLog.length > 40) state.sttLog.shift();
+    console.log("[AL STT log]", fila);
+    return fila;
+  }
+
+  function delayReinicioStt() {
+    if (state.sttFailStreak <= 0) return STT_RESTART_MS;
+    return Math.min(STT_RESTART_MS * 2 ** Math.min(state.sttFailStreak, 4), STT_RESTART_MAX_MS);
+  }
+
+  function armarVentanaComando() {
+    state.commandArmed = true;
+    if (state.wakeTimer) clearTimeout(state.wakeTimer);
+    state.wakeTimer = setTimeout(() => {
+      state.wakeTimer = null;
+      if (!state.commandArmed || state.speaking) return;
+      state.commandArmed = false;
+      if (state.listening && !state.speaking) setMic("listen", "Escuchando “Oye AL”");
+      console.log("[AL STT] ventana de comando expiró; vuelve a “Oye AL”");
+    }, WAKE_VENTANA_MS);
+  }
+
+  function desarmarVentanaComando() {
+    state.commandArmed = false;
+    if (state.wakeTimer) {
+      clearTimeout(state.wakeTimer);
+      state.wakeTimer = null;
+    }
+  }
+
+  function limpiarFinalPendiente() {
+    if (state.finalTimer) {
+      clearTimeout(state.finalTimer);
+      state.finalTimer = null;
+    }
+    state.finalPendiente = "";
+  }
+
+  function restoTrasIntencion(texto, hit) {
+    return hit ? texto.replace(hit.alias, " ").replace(/\s+/g, " ").trim() : texto;
+  }
+
+  function fraseOperativaEstable(raw) {
+    const texto = convertirNumerosHablados(quitarWake(raw));
+    if (!texto) return true;
+    const hit = matchComando(texto);
+    const resto = restoTrasIntencion(texto, hit);
+    if (!hit) {
+      const sufijo = normalizarSufijoSkuVoz(resto);
+      return !(sufijo && /^\d+$/.test(sufijo));
+    }
+    if (hit.tipo === "BUSCAR") {
+      const sufijo = normalizarSufijoSkuVoz(resto);
+      if (!sufijo) return false;
+      return !/^\d+$/.test(sufijo);
+    }
+    if (hit.tipo === "SUMAR" || hit.tipo === "EDITAR") {
+      return parsearCantidadYSufijo(resto).cantidad !== null;
+    }
+    return true;
+  }
+
+  function pareceContinuacionUtterance(pendiente, extra) {
+    const n = normalizar(extra);
+    if (!n || !pendiente) return false;
+    if (contieneWake(n)) return false;
+    const texto = convertirNumerosHablados(n);
+    if (matchComando(texto)) return false;
+    return true;
+  }
+
+  function recibirFinalEstable(finalText) {
+    const extra = String(finalText || "").trim();
+    if (!extra) return;
+    if (state.finalTimer) {
+      clearTimeout(state.finalTimer);
+      state.finalTimer = null;
+    }
+    let combinado = extra;
+    if (state.finalPendiente) {
+      if (pareceContinuacionUtterance(state.finalPendiente, extra)) {
+        combinado = `${state.finalPendiente} ${extra}`.replace(/\s+/g, " ").trim();
+      } else {
+        const previo = state.finalPendiente;
+        state.finalPendiente = "";
+        procesarComando(previo);
+        recibirFinalEstable(extra);
+        return;
+      }
+    }
+    if (!fraseOperativaEstable(combinado)) {
+      state.finalPendiente = combinado;
+      state.finalTimer = setTimeout(() => {
+        state.finalTimer = null;
+        const pendiente = state.finalPendiente;
+        state.finalPendiente = "";
+        if (pendiente && (state.commandArmed || contieneWake(pendiente))) {
+          procesarComando(pendiente);
+        }
+      }, STT_ESTABLE_MS);
+      return;
+    }
+    state.finalPendiente = "";
+    procesarComando(combinado);
+  }
+
   function pauseRecognition() {
     if (state.restartTimer) {
       clearTimeout(state.restartTimer);
@@ -2549,15 +2796,16 @@
     if (state.restartTimer) clearTimeout(state.restartTimer);
     state.restartTimer = setTimeout(() => {
       state.restartTimer = null;
-      if (!state.listening || state.speaking || state.blocked) return;
+      if (!state.listening || state.speaking || state.blocked || state.sttStarting) return;
       const rec = state.recognition;
       if (rec) {
         try {
+          state.sttStarting = true;
           rec.start();
           setMic(state.commandArmed ? "command" : "listen", state.commandArmed ? "Te escucho" : "Escuchando “Oye AL”");
           return;
         } catch {
-          /* InvalidStateError: ya activo o hay que recrear */
+          state.sttStarting = false;
         }
       }
       startEngine();
@@ -2567,11 +2815,11 @@
   function startEngine() {
     const Ctor = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!Ctor) {
-      setMic("error", "Voz no soportada. Use Chrome o Edge.");
+      setMic("error", "Voz no soportada. Use Chrome o Safari.");
       return;
     }
-    if (!state.audioStream || !state.audioStream.active) {
-      activarMicrofonoIndustrial()
+    if (!state.micPermiso) {
+      pedirPermisoMicrofono()
         .then(() => arrancarReconocimiento(Ctor))
         .catch(() => {
           setMic("error", "Permiso de micrófono denegado");
@@ -2587,6 +2835,8 @@
       try {
         state.recognition.onend = null;
         state.recognition.onresult = null;
+        state.recognition.onerror = null;
+        state.recognition.onstart = null;
         state.recognition.stop();
       } catch {
         /* noop */
@@ -2596,57 +2846,110 @@
     rec.lang = idiomaReconocimiento();
     rec.continuous = true;
     rec.interimResults = true;
-    rec.maxAlternatives = 1;
+    try {
+      rec.maxAlternatives = 3;
+    } catch {
+      /* webkit iOS puede ignorar la propiedad */
+    }
+    rec.onstart = () => {
+      state.sttStarting = false;
+      state.sttUtteranceAt = Date.now();
+      console.log("[AL STT] onstart", rec.lang, "continuous", rec.continuous, "interim", rec.interimResults);
+    };
+    rec.onspeechstart = () => {
+      if (!state.sttUtteranceAt) state.sttUtteranceAt = Date.now();
+      console.log("[AL STT] onspeechstart");
+    };
+    rec.onspeechend = () => {
+      console.log("[AL STT] onspeechend");
+    };
     rec.onresult = (event) => {
       let parcial = "";
       let finalText = "";
+      const alternativas = [];
       for (let i = event.resultIndex; i < event.results.length; i += 1) {
-        const alt = event.results[i][0];
+        const result = event.results[i];
+        const alt = result[0];
         const piece = (alt && alt.transcript) || "";
         const confidence = alt && typeof alt.confidence === "number" ? alt.confidence : null;
-        if (!event.results[i].isFinal) {
+        if (result.isFinal) {
+          for (let a = 0; a < result.length; a += 1) {
+            const cand = result[a] && result[a].transcript;
+            if (cand) alternativas.push(String(cand).trim());
+          }
+        }
+        if (!result.isFinal) {
           parcial += piece;
           continue;
         }
         if (!pasaFiltrosVoz(piece, confidence)) continue;
         finalText += piece;
       }
-      if (parcial) mostrarTranscripcion(parcial, true);
-      if (finalText) mostrarTranscripcion(finalText, false);
+      const ms = state.sttUtteranceAt ? Date.now() - state.sttUtteranceAt : 0;
+      if (parcial) {
+        mostrarTranscripcion(parcial, true);
+        registrarStt({
+          tipo: "interim",
+          transcripcion: parcial.trim(),
+          alternativas,
+          ms,
+        });
+      }
+      if (finalText) {
+        mostrarTranscripcion(finalText, false);
+        registrarStt({
+          tipo: "final",
+          transcripcion: finalText.trim(),
+          alternativas: alternativas.filter((item, idx, arr) => arr.indexOf(item) === idx),
+          ms,
+        });
+        state.sttFailStreak = 0;
+      }
       if (!finalText || state.speaking) return;
-      if (state.commandArmed || contieneWake(finalText)) {
-        procesarComando(finalText);
+      if (state.commandArmed || contieneWake(finalText) || state.finalPendiente) {
+        recibirFinalEstable(finalText);
       }
     };
     rec.onerror = (event) => {
-      console.log("[AL STT error]", event.error);
-      if (event.error === "not-allowed") {
+      const error = event && event.error;
+      registrarStt({ tipo: "error", error, transcripcion: "" });
+      if (error === "not-allowed") {
         setMic("error", "Permiso de micrófono denegado");
         state.listening = false;
         liberarMicrofono();
         return;
       }
-      if (event.error === "aborted" || event.error === "no-speech") return;
+      if (error === "aborted" || error === "no-speech") return;
+      if (error === "network" || error === "audio-capture") {
+        state.sttFailStreak += 1;
+        console.log("[AL STT] backoff", delayReinicioStt(), "streak", state.sttFailStreak);
+      }
     };
     rec.onend = () => {
+      state.sttStarting = false;
       if (!state.listening || state.blocked) return;
       if (state.speaking) return;
-      console.log("[AL STT] onend → rearmando “Oye AL”");
-      reiniciarReconocimiento(220);
+      const delay = delayReinicioStt();
+      console.log("[AL STT] onend → rearmando “Oye AL” en", delay, "ms");
+      reiniciarReconocimiento(delay);
     };
     state.recognition = rec;
     try {
+      state.sttStarting = true;
       rec.start();
       setMic(state.commandArmed ? "command" : "listen", state.commandArmed ? "Te escucho" : "Escuchando “Oye AL”");
-      console.log("[AL STT] motor activo", rec.lang, "umbral", umbralConfianza());
+      console.log("[AL STT] motor activo", rec.lang, "alternatives", rec.maxAlternatives, "umbral", umbralConfianza());
     } catch {
+      state.sttStarting = false;
       reiniciarReconocimiento(320);
     }
   }
 
   function stopMic() {
     state.listening = false;
-    state.commandArmed = false;
+    desarmarVentanaComando();
+    limpiarFinalPendiente();
+    state.sttStarting = false;
     if (state.restartTimer) {
       clearTimeout(state.restartTimer);
       state.restartTimer = null;
@@ -3135,6 +3438,42 @@
   }
 
   window.cerrarModalEstatus = cerrarModalEstatus;
+  window.AL_STT_DEBUG = {
+    frases: [
+      "buscar 20 SS",
+      "buscar 24 AB",
+      "buscar 36 SS",
+      "buscar 28 AB",
+      "buscar 20 ese ese",
+      "buscar 24 a be",
+      "suma 3",
+      "suma 12",
+      "fijar 8",
+      "fijar 20",
+      "estatus",
+      "como vamos",
+      "Oye AL buscar 20 SS",
+    ],
+    dump() {
+      console.table(state.sttLog);
+      return state.sttLog.slice();
+    },
+    setIdioma(lang) {
+      state.idiomaOverride = lang === "es-US" || lang === "es-ES" ? lang : null;
+      console.log("[AL STT] idiomaOverride", state.idiomaOverride || idiomaReconocimiento());
+      return idiomaReconocimiento();
+    },
+    config() {
+      return {
+        lang: idiomaReconocimiento(),
+        continuous: true,
+        interimResults: true,
+        maxAlternatives: 3,
+        commandArmed: state.commandArmed,
+        finalPendiente: state.finalPendiente,
+      };
+    },
+  };
 
   iniciar();
 })();

@@ -16,7 +16,13 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from services import chat_service, inventory_service, license_manager
-from services.ocr_engine import inventario_demo, mensaje_carga, mensaje_fallo_lectura, procesar_documento
+from services.ocr_engine import (
+    inventario_demo,
+    mensaje_carga,
+    mensaje_fallo_lectura,
+    procesar_documento,
+    ultimo_estado_ocr,
+)
 from services.paths import CSV_EXPORT_PATH, STATIC_DIR, ensure_data_dir
 from services.persistence import CsvFileStore, get_store
 
@@ -189,6 +195,11 @@ async def upload_documento(
         )
     nombre = (upload.filename or "").lower()
     contenido = await upload.read()
+    print(
+        f"[AL UPLOAD] server_received filename={upload.filename!r} "
+        f"content_type={upload.content_type!r} bytes={len(contenido)}",
+        flush=True,
+    )
     try:
         if not contenido:
             raise HTTPException(status_code=400, detail="Archivo vacío")
@@ -202,7 +213,12 @@ async def upload_documento(
             inventario = procesar_documento(contenido, formato=formato)
 
         if not inventario.get("skus"):
-            raise HTTPException(status_code=422, detail=mensaje_fallo_lectura())
+            etapa = ultimo_estado_ocr()
+            print(f"[AL UPLOAD] ocr_empty etapa={etapa}", flush=True)
+            raise HTTPException(
+                status_code=422,
+                detail=f"{mensaje_fallo_lectura()} [{etapa}]",
+            )
 
         inventory_service.guardar_inventario(inventario)
         voz = mensaje_carga(inventario)

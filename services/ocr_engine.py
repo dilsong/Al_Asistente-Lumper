@@ -198,19 +198,57 @@ def _liberar_memoria_ocr(*objetos: Any) -> None:
     gc.collect()
 
 
+def _exif_orientation(image: Image.Image) -> int | None:
+    try:
+        valor = image.getexif().get(274)
+        return int(valor) if valor else None
+    except Exception:
+        return None
+
+
+def _meta_imagen(data: bytes, rotacion: str = "no") -> dict[str, Any]:
+    meta = {
+        "mime": "",
+        "width": 0,
+        "height": 0,
+        "bytes": len(data or b""),
+        "exif_orientation": None,
+        "rotacion_aplicada": rotacion,
+    }
+    if not data:
+        return meta
+    try:
+        with Image.open(io.BytesIO(data)) as im:
+            meta["mime"] = str(im.format or "").upper() or "UNKNOWN"
+            meta["width"], meta["height"] = im.size
+            meta["exif_orientation"] = _exif_orientation(im)
+    except Exception as exc:
+        meta["mime"] = f"decode_error:{exc}"
+    return meta
+
+
+def _log_meta_imagen(etapa: str, data: bytes, rotacion: str = "no") -> dict[str, Any]:
+    meta = _meta_imagen(data, rotacion)
+    print(
+        f"[AL UPLOAD] {etapa} mime={meta['mime']} "
+        f"{meta['width']}x{meta['height']} bytes={meta['bytes']} "
+        f"exif={meta['exif_orientation'] or 'none'} rotacion={rotacion}",
+        flush=True,
+    )
+    return meta
+
+
 def _abrir_hoja(data: bytes) -> Image.Image:
-    """Abre la foto, aplica EXIF y pone la hoja apaisada (Inbound es landscape)."""
+    """Abre la foto y aplica EXIF transpose. No rota por ser portrait."""
     image = Image.open(io.BytesIO(data))
-    image = ImageOps.exif_transpose(image)
+    transpuesta = ImageOps.exif_transpose(image)
+    if transpuesta is not image:
+        image.close()
+        image = transpuesta
     if image.mode != "RGB":
         rgb = image.convert("RGB")
         image.close()
         image = rgb
-    ancho, alto = image.size
-    if alto > ancho:
-        rotada = image.rotate(90, expand=True)
-        image.close()
-        return rotada
     return image
 
 
@@ -308,7 +346,7 @@ def _ms(inicio: float) -> int:
 
 
 def _jpeg_ya_preparado(data: bytes) -> bool:
-    """True si el cliente ya envió JPEG apaisado dentro del límite de visión."""
+    """True si el cliente ya envió JPEG dentro del límite de visión. Portrait es válido."""
     if not data or data[:2] != b"\xff\xd8":
         return False
     try:
@@ -318,7 +356,7 @@ def _jpeg_ya_preparado(data: bytes) -> bool:
             w, h = im.size
             if min(w, h) < 32 or max(w, h) > MAX_LADO_VISION:
                 return False
-            return w >= h
+            return True
     except Exception:
         return False
 
@@ -980,9 +1018,25 @@ def _parece_encabezado_no_sku(sku: str) -> bool:
     return codigo in encabezado
 
 
+def _acumular_sku(por_sku: dict[str, dict[str, Any]], orden: list[str], sku: str, qty: int) -> None:
+    """Misma hoja: SKU idéntico suma cantidades. No es fuzzy."""
+    if sku in por_sku:
+        previa = int(por_sku[sku].get("cantidad_esperada") or 0)
+        total = previa + int(qty)
+        por_sku[sku]["cantidad_esperada"] = total
+        print(
+            f"[AL OCR] merged sku={sku} previous={previa} added={qty} total={total}",
+            flush=True,
+        )
+        return
+    por_sku[sku] = _sku_item(sku, qty, "")
+    orden.append(sku)
+    print(f"[AL OCR] accepted: {sku}", flush=True)
+
+
 def inventario_desde_vision(payload: dict[str, Any], formato: str | None = None) -> dict[str, Any]:
-    skus: list[dict[str, Any]] = []
-    vistos: set[str] = set()
+    por_sku: dict[str, dict[str, Any]] = {}
+    orden: list[str] = []
     filas = payload.get("skus") if isinstance(payload, dict) else payload
     if isinstance(payload, list):
         filas = payload
@@ -1001,9 +1055,6 @@ def inventario_desde_vision(payload: dict[str, Any], formato: str | None = None)
         if not sku or len(sku) < 4:
             print(f"[AL OCR] rejected: {sku_crudo} reason=short", flush=True)
             continue
-        if sku in vistos:
-            print(f"[AL OCR] rejected: {sku} reason=duplicate", flush=True)
-            continue
         if _parece_encabezado_no_sku(sku):
             print(f"[AL OCR] rejected: {sku} reason=header", flush=True)
             continue
@@ -1014,10 +1065,9 @@ def inventario_desde_vision(payload: dict[str, Any], formato: str | None = None)
         if qty <= 0:
             print(f"[AL OCR] rejected: {sku} reason=qty", flush=True)
             continue
-        vistos.add(sku)
-        print(f"[AL OCR] accepted: {sku}", flush=True)
-        skus.append(_sku_item(sku, qty, ""))
+        _acumular_sku(por_sku, orden, sku, qty)
     print(f"[AL OCR] raw_skus: {crudos}", flush=True)
+    print(f"[AL OCR] unique_skus: {len(orden)}", flush=True)
     contenedor = ""
     if isinstance(payload, dict):
         contenedor = str(payload.get("contenedor") or payload.get("trailer") or "").strip()
@@ -1025,7 +1075,7 @@ def inventario_desde_vision(payload: dict[str, Any], formato: str | None = None)
         "contenedor": re.sub(r"\s+", "", contenedor.upper()),
         "formato": (formato or "B").upper(),
         "fecha_carga": _ahora(),
-        "skus": skus,
+        "skus": [por_sku[sku] for sku in orden],
     }
 
 
@@ -1364,9 +1414,22 @@ def procesar_documento(data: bytes, formato: str | None = None) -> dict[str, Any
             )
         else:
             t_prep = time.perf_counter()
+            _log_meta_imagen("server_received", data, "no")
             jpeg = _imagen_a_jpeg_bytes(data)
-            prepare_ms = _ms(t_prep)
             skip_recompress = jpeg is data
+            _log_meta_imagen(
+                "ocr_input",
+                jpeg,
+                "no" if skip_recompress else "exif_transpose_si_existe",
+            )
+            if os.environ.get("AL_OCR_DEBUG") == "1":
+                dest = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "ocr" / "_debug"
+                dest.mkdir(parents=True, exist_ok=True)
+                (dest / "01_server_received.jpg").write_bytes(data)
+                (dest / "02_ocr_input.jpg").write_bytes(jpeg)
+                print(f"[AL UPLOAD] debug_dump {dest}", flush=True)
+            prepare_ms = _ms(t_prep)
+            print("[AL OCR] vision_start", flush=True)
             print("[AL OCR] Enviando hoja a visión (Gemini; OpenAI solo si falla)…", flush=True)
             t_vis = time.perf_counter()
             vision = _llamar_vision(data, jpeg=jpeg, presupuesto=presupuesto)
@@ -1721,8 +1784,8 @@ def parsear_formato_a(texto: str) -> dict[str, Any]:
         [r"OTHER REFERENCE NUMBER", r"OTHER REF(?:ERENCE)?(?: NO\.?| NUMBER)?", r"CONTAINER"],
     )
     zona = _zona_tabla(texto)
-    skus: list[dict[str, Any]] = []
-    vistos: set[str] = set()
+    por_sku: dict[str, dict[str, Any]] = {}
+    orden: list[str] = []
 
     for linea in _limpiar_lineas(zona):
         if ENCABEZADO_TABLA_RE.fullmatch(linea.replace(" ", "")):
@@ -1731,10 +1794,10 @@ def parsear_formato_a(texto: str) -> dict[str, Any]:
         if not fila:
             continue
         sku, _descripcion, qty = fila
-        if sku in vistos or qty <= 0:
+        if qty <= 0:
             continue
-        vistos.add(sku)
-        skus.append(_sku_item(sku, qty))
+        _acumular_sku(por_sku, orden, sku, qty)
+    skus = [por_sku[sku] for sku in orden]
 
     if not skus:
         skus = _fallback_pares(zona or texto)
@@ -1802,19 +1865,18 @@ def parsear_formato_b(texto: str) -> dict[str, Any]:
 
 def _fallback_pares(texto: str) -> list[dict[str, Any]]:
     """Cualquier código alfanumérico de Product + último entero como QTY."""
-    skus: list[dict[str, Any]] = []
-    vistos: set[str] = set()
+    por_sku: dict[str, dict[str, Any]] = {}
+    orden: list[str] = []
     for linea in _limpiar_lineas(texto):
         tokens = [_sanear_sku(t) for t in SKU_FLEX_RE.findall(linea)]
         qty = _qty_de_linea(linea)
         if not tokens or qty is None:
             continue
         sku = tokens[0]
-        if _es_ruido_sku(sku) or sku in vistos:
+        if _es_ruido_sku(sku):
             continue
-        vistos.add(sku)
-        skus.append(_sku_item(sku, qty))
-    return skus
+        _acumular_sku(por_sku, orden, sku, qty)
+    return [por_sku[sku] for sku in orden]
 
 
 def parsear_texto(texto: str, formato: str | None = None) -> dict[str, Any]:

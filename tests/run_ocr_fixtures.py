@@ -32,3 +32,4 @@ def _correr(nombre: str, path: Path, formato: str) -> None:
 
 if __name__ == "__main__":
     _correr("PURCHASE ORDER 02", FIXTURES / "purchase_order_real_02.jpg", "A")
+    _correr("PURCHASE ORDER CAJU", FIXTURES / "purchase_order_real_03.jpg", "A")

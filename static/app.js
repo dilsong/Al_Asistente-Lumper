@@ -3159,10 +3159,20 @@
       };
       img.onerror = () => {
         URL.revokeObjectURL(url);
-        reject(new Error("No se pudo leer la imagen."));
+        reject(
+          new Error(
+            `No se pudo decodificar la imagen (${file && file.type ? file.type : "sin MIME"}, ${file && file.size ? file.size : 0} bytes).`
+          )
+        );
       };
       img.src = url;
     });
+  }
+
+  function detalleHttpUpload(response, data) {
+    const crudo = data && data.detail !== undefined ? data.detail : "";
+    const texto = typeof crudo === "string" ? crudo : crudo && crudo.mensaje ? crudo.mensaje : "";
+    return texto || response.statusText || "sin detalle";
   }
 
   async function comprimirImagenCliente(file) {
@@ -3172,6 +3182,11 @@
     let canvas = null;
     let ctx = null;
     try {
+      console.log("[AL UPLOAD] client_decode", {
+        mime: file.type || "",
+        bytes: file.size || 0,
+        name: file.name || "",
+      });
       if (typeof createImageBitmap === "function") {
         try {
           fuente = await createImageBitmap(file, { imageOrientation: "from-image" });
@@ -3187,25 +3202,30 @@
       const scale = Math.min(1, MAX_LADO_IMAGEN / Math.max(w, h));
       const tw = Math.max(1, Math.round(w * scale));
       const th = Math.max(1, Math.round(h * scale));
-      const portrait = th > tw;
       canvas = document.createElement("canvas");
-      canvas.width = portrait ? th : tw;
-      canvas.height = portrait ? tw : th;
+      canvas.width = tw;
+      canvas.height = th;
       ctx = canvas.getContext("2d", { alpha: false });
       if (!ctx) return file;
       ctx.fillStyle = "#ffffff";
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      if (portrait) {
-        ctx.translate(0, canvas.height);
-        ctx.rotate(-Math.PI / 2);
-      }
+      ctx.fillRect(0, 0, tw, th);
       ctx.drawImage(fuente, 0, 0, tw, th);
       const blob = await canvasABlob(canvas, "image/jpeg", JPEG_CALIDAD);
       const base = String(file.name || "hoja").replace(/\.[^.]+$/, "") || "hoja";
+      console.log("[AL UPLOAD] client_prepare", {
+        mime: "image/jpeg",
+        width: tw,
+        height: th,
+        bytes: blob.size,
+        exif: "from-image",
+        rotacion_aplicada: "no",
+      });
       return new File([blob], `${base}.jpg`, { type: "image/jpeg", lastModified: Date.now() });
     } catch (error) {
-      console.log("[AL] Compresión de imagen omitida", error);
-      return file;
+      console.log("[AL UPLOAD] client_prepare_error", error && error.message ? error.message : error);
+      throw new Error(
+        `Fallo local al preparar la imagen: ${error && error.message ? error.message : "Canvas/Blob"}`
+      );
     } finally {
       if (ctx && canvas) ctx.clearRect(0, 0, canvas.width, canvas.height);
       if (canvas) {
@@ -3241,8 +3261,15 @@
       const file = event.target.files && event.target.files[0];
       event.target.value = "";
       if (!file) return;
+      const origen = id === "file-input-camera" ? "tomar_foto" : "subir_foto";
+      console.log("[AL UPLOAD] input_selected", {
+        origen,
+        mime: file.type || "",
+        bytes: file.size || 0,
+        name: file.name || "",
+      });
       mostrarCargando("⌛ Procesando hoja de recepción...");
-      subirDocumento(file).catch((err) => responder(err.message));
+      subirDocumento(file).catch((err) => responder(err.message || String(err)));
     });
   }
 
@@ -3253,17 +3280,37 @@
       await pushChat("al", "Comprimiendo y leyendo la hoja de papel…", { evento: "ocr_inicio" });
       mostrarCargando("⌛ Comprimiendo imagen...");
       const compacta = await comprimirImagenCliente(file);
-      mostrarCargando("⌛ Leyendo hoja de recepción...");
       const form = new FormData();
       form.append("archivo", compacta, compacta.name || "hoja.jpg");
       form.append("file", compacta, compacta.name || "hoja.jpg");
-      const response = await fetch("/api/ocr/upload", { method: "POST", body: form });
+      console.log("[AL UPLOAD] formdata_ready", {
+        mime: compacta.type || "",
+        bytes: compacta.size || 0,
+        name: compacta.name || "",
+      });
+      mostrarCargando("⌛ Leyendo hoja de recepción...");
+      console.log("[AL UPLOAD] fetch_start /api/ocr/upload");
+      let response;
+      try {
+        response = await fetch("/api/ocr/upload", { method: "POST", body: form });
+      } catch (err) {
+        throw new Error(
+          `La imagen no salió del teléfono (red/fetch): ${err && err.message ? err.message : err}`
+        );
+      }
       const data = await response.json().catch(() => ({}));
+      console.log("[AL UPLOAD] http_status", response.status, detalleHttpUpload(response, data));
       if (response.status === 403 && data.bloqueado) {
         bloquearLicencia(data.licencia || data);
-        throw new Error(data.detail);
+        throw new Error(detalleHttpUpload(response, data));
       }
-      if (!response.ok) throw new Error(data.detail || "No se pudo leer la hoja");
+      if (!response.ok) {
+        const detalle = detalleHttpUpload(response, data);
+        if (response.status === 422) {
+          throw new Error(`El servidor recibió la imagen pero no extrajo SKUs. ${detalle}`);
+        }
+        throw new Error(`HTTP ${response.status}: ${detalle}`);
+      }
       const acumulando = (state.inventario.skus || []).length > 0 || state.modoSumarHoja;
       aplicarInventarioCargado(data.inventario, data.sku_activo || data.skuActivo);
       const hojas = hojasDelContenedor();

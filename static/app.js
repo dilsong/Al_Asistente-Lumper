@@ -204,10 +204,20 @@
       .filter(Boolean);
   }
 
+  function versionAl() {
+    return String((typeof window !== "undefined" && window.AL_APP_VERSION) || "").trim() || "dev";
+  }
+
+  function pintarVersionAl() {
+    const el = $("settings-app-version");
+    if (el) el.textContent = `Versión AL ${versionAl()}`;
+  }
+
   function abrirAjustesComandos() {
     const overlay = $("settings-overlay");
     const lista = $("settings-command-list");
     const status = $("settings-status");
+    pintarVersionAl();
     if (!overlay || !lista) return;
     const actuales = comandosActivos();
     lista.innerHTML = CATALOGO_COMANDOS.map((item) => {
@@ -3546,6 +3556,7 @@
   }
 
   async function iniciar() {
+    pintarVersionAl();
     pintarIdentidadCliente(licenciaClienteValida());
     if (!licenciaClienteValida()) {
       bloquearLicencia({
@@ -3621,8 +3632,9 @@
 
   function registrarServiceWorker() {
     if (!("serviceWorker" in navigator)) return;
+    const url = `/static/sw.js?v=AL-${encodeURIComponent(versionAl())}`;
     navigator.serviceWorker
-      .register("/static/sw.js")
+      .register(url)
       .then((reg) => {
         if (reg.waiting) reg.waiting.postMessage({ type: "SKIP_WAITING" });
         return reg.update();
@@ -3658,6 +3670,7 @@
     },
     config() {
       return {
+        version: versionAl(),
         lang: idiomaReconocimiento(),
         continuous: true,
         interimResults: true,
@@ -3667,6 +3680,8 @@
       };
     },
   };
+  window.AL_VERSION = versionAl;
 
+  console.log("[AL] version", versionAl());
   iniciar();
 })();

@@ -22,7 +22,14 @@
         },
       };
     </script>
-    <link rel="stylesheet" href="/static/styles.css?v=1.0.15" />
+    <script src="/static/version.js"></script>
+    <script>
+      document.write(
+        '<link rel="stylesheet" href="/static/styles.css?v=AL-' +
+          encodeURIComponent(self.AL_APP_VERSION || "dev") +
+          '">'
+      );
+    </script>
     <style>
       .count-field {
         justify-content: flex-end !important;
@@ -141,6 +148,7 @@
         <div id="settings-command-list" class="settings-list"></div>
         <p id="settings-status" class="settings-status" aria-live="polite"></p>
         <button type="button" id="settings-save" class="btn-primary settings-save">GUARDAR COMANDOS</button>
+        <p id="settings-app-version" class="settings-version">Versión AL</p>
       </div>
     </div>
 
@@ -426,7 +434,12 @@
       </div>
     </div>
 
-    <script src="/static/config.js?v=1.0.1"></script>
-    <script src="/static/app.js?v=1.0.15"></script>
+    <script>
+      (function () {
+        var v = "AL-" + encodeURIComponent(self.AL_APP_VERSION || "dev");
+        document.write('<script src="/static/config.js?v=' + v + '"><\/script>');
+        document.write('<script src="/static/app.js?v=' + v + '"><\/script>');
+      })();
+    </script>
   </body>
 </html>

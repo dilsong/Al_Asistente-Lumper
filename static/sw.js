@@ -1,11 +1,15 @@
-const APP_VERSION = "1.0.15";
-const CACHE_NAME = `al-cache-v${APP_VERSION}`;
+importScripts("/static/version.js");
+
+const APP_VERSION = self.AL_APP_VERSION || "dev";
+const CACHE_BUST = `AL-${APP_VERSION}`;
+const CACHE_NAME = `al-asistente-v${APP_VERSION}`;
 const PRECACHE = [
   "/",
   "/static/index.html",
-  `/static/styles.css?v=${APP_VERSION}`,
-  `/static/config.js?v=${APP_VERSION}`,
-  `/static/app.js?v=${APP_VERSION}`,
+  "/static/version.js",
+  `/static/styles.css?v=${CACHE_BUST}`,
+  `/static/config.js?v=${CACHE_BUST}`,
+  `/static/app.js?v=${CACHE_BUST}`,
   "/static/manifest.json",
   "/static/icon.svg",
 ];
@@ -38,7 +42,8 @@ self.addEventListener("fetch", (event) => {
     event.request.mode === "navigate" ||
     url.pathname === "/" ||
     url.pathname.endsWith(".html") ||
-    url.pathname.endsWith("/sw.js");
+    url.pathname.endsWith("/sw.js") ||
+    url.pathname.endsWith("/version.js");
   event.respondWith(
     fetch(event.request, revalidarSiempre ? { cache: "no-store" } : undefined)
       .then((response) => {

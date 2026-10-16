@@ -41,7 +41,7 @@ def _debe_revalidar(path: str) -> bool:
     if path == "/" or path.endswith(".html"):
         return True
     nombre = path.rsplit("/", 1)[-1]
-    return nombre in {"sw.js", "manifest.json"}
+    return nombre in {"sw.js", "manifest.json", "version.js"}
 
 RUTAS_LIBRES = {
     "/api/health",
